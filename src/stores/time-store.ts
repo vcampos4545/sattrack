@@ -22,6 +22,14 @@ export function setWallClock(fn: () => number): void {
   wallClock = fn;
 }
 
+/**
+ * Real (wall-clock) time, UTC ms. For display only, e.g. showing how far the
+ * simulation is from real time. Orbit calculations use `getSimTimeMs()`.
+ */
+export function getWallClockMs(): number {
+  return wallClock();
+}
+
 export interface TimeState {
   anchorRealMs: number;
   anchorSimMs: number;

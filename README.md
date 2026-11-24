@@ -129,6 +129,8 @@ section with the change.
 changes only when the clock is controlled, not per tick. Orbit code never calls
 `Date.now()`. The only wall-clock uses are catalog data age and cache freshness,
 which are about real downloads.
+`getWallClockMs()` returns real time through the same injectable clock, for
+display only (the time bar's offset from real time).
 
 **Catalog and selection.** `stores/satellite-store.ts`:
 - `satellites` (everything loaded), `tracked` (minus user-removed), `visible`
@@ -185,6 +187,33 @@ leave `Dashboard.tsx` / `Header.tsx` alone:
 
 `CATEGORY_COLORS` (`utils/category-colors.ts`) is the shared palette for
 categories across all views.
+
+## Time controls
+
+The bar under the header drives the simulation clock. Every view reads time
+from it, so pausing, scrubbing or jumping moves all of them together.
+
+![Time controls bar](docs/screenshots/time-controls.png)
+
+- **Status.** `LIVE` (green) when running at 1x on real time, `PAUSED`
+  (amber), or the current rate such as `60x` / `-600x` (blue).
+- **Sim vs real.** The simulation instant in UTC and local time, then `Δ`,
+  the simulation time minus real time. Real UTC also shows on wide screens
+  and in the tooltip.
+- **Step.** Back/forward by the chosen step (10 s to 1 d). Works while paused.
+- **Speed.** 1x to 100,000x. `Rev` flips the sign so time runs backward.
+- **Jump.** Enter a date and time in local time or UTC. The store only ever
+  receives UTC ms. Switching the zone re-expresses the same instant.
+  Impossible dates (Feb 30, 24:00) are rejected rather than rolled over.
+  Jumping keeps the paused or running state.
+- **Live.** Back to real time at 1x, running.
+
+Keyboard (ignored while typing in a field): `Space` pause/resume, `←`/`→`
+step, `[`/`]` slower/faster, `R` reverse, `J` jump, `L` live.
+
+Conversions live in `core/orbit/time-utils.ts` (`parseDateTimeInput`,
+`formatDateTimeInput`) and are tested in `src/tests/time/` under several time
+zones (`TZ=Pacific/Chatham npx vitest run src/tests/time`).
 
 ## Data source etiquette
 

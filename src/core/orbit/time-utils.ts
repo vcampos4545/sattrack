@@ -89,3 +89,54 @@ export function classifyEpochAge(epochMs: number, atMs: number): 'fresh' | 'agin
   if (days < EPOCH_STALE_DAYS) return 'aging';
   return 'stale';
 }
+
+/**
+ * Text form used by `<input type="datetime-local">`: `YYYY-MM-DDTHH:MM[:SS]`.
+ * `zone` says how to read the wall-clock fields: `'utc'` treats them as UTC,
+ * `'local'` as the runtime's local time zone (DST handled by `Date`).
+ * Internally everything stays UTC ms; this is only the UI boundary.
+ */
+export type DateTimeZone = 'utc' | 'local';
+
+const DATETIME_INPUT_RE = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?$/;
+
+/**
+ * Parses a datetime-local string into UTC ms. Returns `null` for malformed
+ * text or impossible calendar values (Feb 30, 25:00) instead of letting
+ * `Date` silently roll them over.
+ */
+export function parseDateTimeInput(text: string, zone: DateTimeZone): number | null {
+  const m = DATETIME_INPUT_RE.exec(text.trim());
+  if (!m) return null;
+  const num = (i: number) => (m[i] === undefined ? 0 : Number(m[i]));
+  const [y, mo, d, h, mi, s] = [num(1), num(2), num(3), num(4), num(5), num(6)];
+  const ms = m[7] ? Number(m[7].padEnd(3, '0')) : 0;
+  if (mo < 1 || mo > 12 || d < 1 || h > 23 || mi > 59 || s > 59) return null;
+  const date = zone === 'utc' ? new Date(Date.UTC(y, mo - 1, d, h, mi, s, ms)) : new Date(y, mo - 1, d, h, mi, s, ms);
+  // Years 0-99 are mapped to 1900-1999 by both constructors; set explicitly.
+  if (zone === 'utc') date.setUTCFullYear(y, mo - 1, d);
+  else date.setFullYear(y, mo - 1, d);
+  // Reject roll-over (e.g. Feb 30 -> Mar 2). Local times skipped by a DST
+  // gap shift the hour, which is accepted: Date picks the next valid instant.
+  const dayOk =
+    zone === 'utc'
+      ? date.getUTCFullYear() === y && date.getUTCMonth() === mo - 1 && date.getUTCDate() === d
+      : date.getFullYear() === y && date.getMonth() === mo - 1 && date.getDate() === d;
+  return dayOk ? date.getTime() : null;
+}
+
+/** UTC ms -> `YYYY-MM-DDTHH:MM:SS` in the given zone, for datetime-local inputs. */
+export function formatDateTimeInput(ms: number, zone: DateTimeZone): string {
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return '';
+  const p = (n: number, w = 2) => String(n).padStart(w, '0');
+  const utc = zone === 'utc';
+  const y = utc ? d.getUTCFullYear() : d.getFullYear();
+  const mo = utc ? d.getUTCMonth() : d.getMonth();
+  const day = utc ? d.getUTCDate() : d.getDate();
+  const h = utc ? d.getUTCHours() : d.getHours();
+  const mi = utc ? d.getUTCMinutes() : d.getMinutes();
+  const s = utc ? d.getUTCSeconds() : d.getSeconds();
+  return `${p(y, 4)}-${p(mo + 1)}-${p(day)}T${p(h)}:${p(mi)}:${p(s)}`;
+}
+

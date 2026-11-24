@@ -50,3 +50,15 @@ export function formatLongitude(deg: number, digits = 3): string {
 export function formatNumber(value: number, digits = 1): string {
   return value.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
 }
+
+/**
+ * Signed clock offset, e.g. `+00:05:00`, `-3d 04:00:00`. Used to show how far
+ * simulation time is from real time.
+ */
+export function formatClockOffset(offsetMs: number): string {
+  const totalS = Math.trunc(Math.abs(offsetMs) / 1000);
+  const sign = totalS === 0 ? '±' : offsetMs < 0 ? '-' : '+';
+  const days = Math.floor(totalS / 86400);
+  const hms = `${pad(Math.floor((totalS % 86400) / 3600))}:${pad(Math.floor((totalS % 3600) / 60))}:${pad(totalS % 60)}`;
+  return `${sign}${days > 0 ? `${days}d ` : ''}${hms}`;
+}
