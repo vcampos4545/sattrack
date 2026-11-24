@@ -409,14 +409,13 @@ below the elevation mask (Settings, default 10 degrees) is hatched.
 - **Radius.** Linear in zenith angle, `r = R (90 - el) / 90`
   (`components/sky-plot/sky-projection.ts`, tested in `src/tests/sky-plot/`).
 
-The arc finder (`findSkyArc` in `core/orbit/sky-track.ts`) scans look angles
-at the pass scan step (Settings), bisects AOS and LOS to 0.25 s and refines
-the culmination with a golden-section search. A selected pass is found again
-from its id (`${noradId}-${aosMs}`), so the sky plot needs nothing from the
-passes table but the id. The search result is cached until simulation time
-leaves the interval it is valid for (no arc can start before its AOS, and it
-stays current until its LOS). Like any fixed-step scan it can miss an arc
-shorter than one step, which only affects grazing passes.
+Passes come from the shared pass store (`usePassPredictions()` /
+`useSelectedPass()`), so the sky plot and the passes table always show the
+same AOS / max / LOS. With no pass selected it uses
+`currentOrNextPass(passes, now)`. When the search finds nothing it says why
+(never above the mask in the window, always above it, or a propagation
+error). `core/orbit/sky-track.ts` only samples look angles for the live path
+(`sampleSkyTrack`, `lookAnglesFast`) and measures pointing separation.
 
 **Antenna overlay (not connected to hardware).** `SkyPlot` takes an optional
 `antenna: AntennaPointing` prop (`types/antenna.ts`) with `commanded` and

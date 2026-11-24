@@ -14,7 +14,7 @@ import { Panel } from '../layout/Panel';
 import { AntennaOverlay } from './AntennaOverlay';
 import { elevationRadius, projectAzEl } from './sky-projection';
 import { SkyTrajectory } from './SkyTrajectory';
-import { useSkyPlotData, type FocusKind } from './use-sky-plot-data';
+import { useSkyPlotData, type FocusKind, type SkyPlotData } from './use-sky-plot-data';
 
 /** Horizon radius in SVG units. Labels sit outside it. */
 const R = 100;
@@ -57,14 +57,11 @@ export interface SkyPlotProps {
  */
 export function SkyPlot({ antenna = null }: SkyPlotProps) {
   const record = useSatelliteStore(selectSelectedSatellite);
-  const selectedPassId = useSatelliteStore((s) => s.selectedPassId);
   const observer = useObserverStore((s) => s.location);
   const maskDeg = useSettingsStore((s) => s.elevationMaskDeg);
-  const passSearchDays = useSettingsStore((s) => s.passSearchDays);
-  const passScanStepS = useSettingsStore((s) => s.passScanStepS);
   const timeMs = useSimTimeMs(2);
 
-  const data = useSkyPlotData({ record, observer, timeMs, maskDeg, selectedPassId, passSearchDays, passScanStepS });
+  const data = useSkyPlotData({ record, observer, timeMs });
   const color = record ? CATEGORY_COLORS[record.category] : FOCUS_COLOR;
 
   return (
@@ -106,8 +103,8 @@ export function SkyPlot({ antenna = null }: SkyPlotProps) {
           current={data.current}
           focus={data.focus}
           focusKind={data.focusKind}
-          noArcInWindow={data.noArcInWindow}
-          searchEndMs={data.searchEndMs}
+          passStatus={data.passStatus}
+          windowEndMs={data.windowEndMs}
           error={data.error}
           antenna={antenna}
         />
@@ -350,6 +347,13 @@ function PassMarks({ pass }: { pass: Pass }) {
   );
 }
 
+const PASS_STATUS_TEXT: Record<NonNullable<SkyPlotData['passStatus']>, (maskDeg: number, windowEndMs: number) => string> = {
+  computing: () => 'Predicting passes…',
+  'never-above-mask': (mask, end) => `No pass above ${mask}° before ${new Date(end).toLocaleDateString()}.`,
+  'always-above-mask': (mask) => `Stays above ${mask}° for the whole search window.`,
+  'propagation-error': () => 'Pass search failed: SGP4 could not propagate these elements.',
+};
+
 const FOCUS_TITLES: Record<FocusKind, string> = {
   selected: 'Selected pass',
   'in-progress': 'Pass in progress',
@@ -373,14 +377,14 @@ interface SkyReadoutProps {
   current: LookAngles | null;
   focus: Pass | null;
   focusKind: FocusKind | null;
-  noArcInWindow: boolean;
-  searchEndMs: number;
+  passStatus: SkyPlotData['passStatus'];
+  windowEndMs: number;
   error: string | null;
   antenna: AntennaPointing | null;
 }
 
 function SkyReadout(props: SkyReadoutProps) {
-  const { name, color, timeMs, maskDeg, current, focus, focusKind, noArcInWindow, searchEndMs, error, antenna } = props;
+  const { name, color, timeMs, maskDeg, current, focus, focusKind, passStatus, windowEndMs, error, antenna } = props;
   const status = !current
     ? null
     : current.elevationDeg >= maskDeg
@@ -427,12 +431,8 @@ function SkyReadout(props: SkyReadoutProps) {
           <Row label="Duration" value={formatDuration(focus.durationS * 1000)} />
         </div>
       )}
-      {!focus && noArcInWindow && current && (
-        <p className="border-t border-line pt-2 text-[11px] text-muted">
-          {current.elevationDeg >= maskDeg
-            ? `Stays above ${maskDeg}° for the whole search window.`
-            : `No pass above ${maskDeg}° before ${new Date(searchEndMs).toLocaleDateString()}.`}
-        </p>
+      {!focus && passStatus && (
+        <p className="border-t border-line pt-2 text-[11px] text-muted">{PASS_STATUS_TEXT[passStatus](maskDeg, windowEndMs)}</p>
       )}
 
       {antenna && (antenna.commanded || antenna.actual) && (
