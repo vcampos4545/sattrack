@@ -61,12 +61,15 @@ src/
     celestrak.ts       CelesTrak GP endpoints, group definitions, typed fetch errors
     satellite-catalog.ts  Cache-first catalog loading, validation, merging
     storage.ts         IndexedDB / localStorage with in-memory fallbacks
+    geolocation.ts     Browser Geolocation API wrapper with typed failures
+    place-search.ts    Offline place search over the bundled GeoNames extract
+  data/places.json     Bundled place list (built by scripts/build-places.mjs)
   stores/              Zustand stores (see contracts)
   hooks/               React glue: sim time, catalog bootstrap, selected satellite
   types/               Shared types: satellite, orbital, observer, passes
   components/          One slot file per dashboard panel (see contracts)
-  utils/               Formatting, category colors
-  tests/               Vitest suites: orbit/, coordinates/, services/, stores/
+  utils/               Formatting, category colors, coordinate input parsing
+  tests/               Vitest suites: orbit/, coordinates/, services/, stores/, location/
 ```
 
 ## Coordinate systems and units
@@ -117,6 +120,40 @@ colors the epoch accordingly. Records that fail validation or SGP4
 initialization are dropped and counted (`CatalogGroupStatus.rejectedCount`),
 never silently fixed. Propagation failures (for example a decayed orbit) return
 `null` / `ok: false` rather than a position.
+
+## Observer location
+
+The location panel opens from the coordinates button in the header. It shows
+the configured location (with a warning while it is still the Greenwich
+default) and offers three ways to set it. Every path goes through
+`useObserverStore.setLocation`, so it is validated and persisted to
+localStorage.
+
+- **Detect My Location** uses the browser Geolocation API
+  (`services/geolocation.ts`). It never assumes permission: no API, an
+  insecure context (geolocation needs https or localhost), denial, no fix and
+  timeout each produce a specific message, and manual entry stays available.
+  The fix is labeled with the nearest bundled city within 30 km. Per the W3C
+  spec, a reported altitude is meters above the WGS84 ellipsoid and is stored
+  as-is. Most desktop browsers report none; the panel then uses the nearest
+  city's elevation and says so, or keeps the previous altitude if no city is
+  near.
+- **Find a place** searches an offline list: every GeoNames place with at least
+  100 000 inhabitants plus all national capitals (about 6 400 entries, 150 KB
+  gzipped, loaded on first use as its own chunk). Search ignores accents and
+  accepts a qualifier after a comma (`Portland, Oregon`, `Paris, FR`). A place
+  sets the city-center coordinates and elevation. Data: [GeoNames](https://www.geonames.org/),
+  CC BY 4.0. Rebuild it with `node scripts/build-places.mjs <dir>` (instructions
+  in the script).
+- **Manual entry** takes latitude, longitude and altitude (meters). Coordinates
+  accept signed decimal degrees, a hemisphere letter (`40.7128 N`, `74.006W`),
+  or degrees/minutes/seconds (`40°42'46"N`). Ranges are checked by
+  `validateObserverLocation` with per-field errors.
+
+Altitude reference: GeoNames elevations are above mean sea level, while
+`altitudeM` means above the WGS84 ellipsoid. The difference (geoid undulation)
+is within about ±100 m worldwide and moves LEO elevation angles by well under
+0.01°, so it is documented rather than corrected.
 
 ## Module contracts
 
