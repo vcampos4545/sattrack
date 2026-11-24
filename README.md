@@ -274,6 +274,37 @@ Base map: [Natural Earth](https://www.naturalearthdata.com/) 1:110m land
 polygons (public domain), stored compactly in
 `src/assets/geo/ne-110m-land.json`, loaded lazily and rasterized to an
 equirectangular canvas texture with a 15-degree graticule.
+## Primary globe and catalog search
+
+`components/globe/` renders the main 3D view with React Three Fiber.
+
+- **Frame.** The scene is TEME, re-axed for Three.js (y = north) and scaled to
+  Earth radii (`scene-frame.ts`). The Earth, grid and observer sit in a group
+  rotated by `gmstRad`, so satellites drawn at their TEME positions appear over
+  the ground point `ecefToGeodetic` reports. Tests check this against Three.js's
+  own `SphereGeometry` UVs.
+- **Earth.** NASA Blue Marble (day) and Earth at Night textures in
+  `public/textures/` (public domain NASA imagery; files taken from the
+  three-globe example assets). The mesh is scaled to the WGS84 ellipsoid. The
+  day/night terminator uses `core/orbit/sun-position.ts` (Astronomical Almanac
+  low-precision Sun, ~0.01 deg).
+- **Markers.** One `Points` draw call for all visible objects, colored by
+  `CATEGORY_COLORS`. SGP4 runs in a Web Worker (`propagation/`) at
+  `settings.propagationHz`, or sooner when simulation time moves more than 20 s.
+  Each frame extrapolates with a third-order two-body series
+  (`core/orbit/extrapolation.ts`, < 50 m at 20 s). Markers are hidden rather
+  than guessed past 120 s from the last batch or when SGP4 fails.
+- **Orbits.** Selected path from `sampleTrajectory` (past quarter dimmed); "all
+  visible" paths sampled in the worker (`core/orbit/orbit-sampling.ts`). Paths
+  regenerate only on selection, element set or setting change, or when the
+  clock drifts 20% of the path span.
+- **Interaction.** Drag to rotate, scroll to zoom, hover for name and NORAD id,
+  click to select. Buttons center on the observer or the selection.
+- **Search** (header, press `/`): name, NORAD id or international designator.
+  Rows track/untrack; a NORAD number not in the loaded groups can be
+  downloaded and tracked. Category chips at the bottom of the globe filter.
+
+![Globe with ISS selected](docs/globe-selected.png)
 
 ## Module contracts
 
