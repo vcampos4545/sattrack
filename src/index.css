@@ -1,0 +1,43 @@
+@import 'tailwindcss';
+
+/*
+ * Design tokens. Near-black navy base, thin borders, muted text, one restrained
+ * accent. Category colors are shared by every visualization (see
+ * src/utils/category-colors.ts, which mirrors these values for Three.js).
+ */
+@theme {
+  --color-base: #05080f;
+  --color-panel: #0a101c;
+  --color-panel-raised: #0f1726;
+  --color-line: #1a2436;
+  --color-line-strong: #26334a;
+  --color-ink: #d5deeb;
+  --color-muted: #7c8aa1;
+  --color-faint: #4c5a70;
+  --color-accent: #4cc2ff;
+  --color-ok: #3ecf8e;
+  --color-warn: #f2b84b;
+  --color-danger: #f0616d;
+
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-base);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
