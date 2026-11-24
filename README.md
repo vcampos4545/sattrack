@@ -60,6 +60,7 @@ src/
     pass-prediction.ts AOS / LOS / max-elevation search (scan + bisection + golden section)
     ground-track.ts    Sub-satellite track, antimeridian splitting, ground heading
     footprint.ts       Coverage footprint (true min-elevation contour), observer-in-footprint
+    sky-track.ts       Sky-plot look-angle sampling, pointing separation
   services/
     celestrak.ts       CelesTrak GP endpoints, group definitions, typed fetch errors
     satellite-catalog.ts  Cache-first catalog loading, validation, merging
@@ -72,10 +73,10 @@ src/
   workers/             pass-prediction.worker.ts
   stores/              Zustand stores (see contracts)
   hooks/               React glue: sim time, catalog bootstrap, selected satellite
-  types/               Shared types: satellite, orbital, observer, passes
+  types/               Shared types: satellite, orbital, observer, passes, antenna
   components/          One slot file per dashboard panel (see contracts)
   utils/               Formatting, category colors, coordinate input parsing
-  tests/               Vitest suites: orbit/, coordinates/, passes/, services/, stores/, location/
+  tests/               Vitest suites: orbit/, coordinates/, passes/, services/, stores/, location/, sky-plot/
 ```
 
 ## Coordinate systems and units
@@ -383,6 +384,49 @@ step, `[`/`]` slower/faster, `R` reverse, `J` jump, `L` live.
 Conversions live in `core/orbit/time-utils.ts` (`parseDateTimeInput`,
 `formatDateTimeInput`) and are tested in `src/tests/time/` under several time
 zones (`TZ=Pacific/Chatham npx vitest run src/tests/time`).
+
+## Local sky plot
+
+`components/sky-plot/SkyPlot.tsx` plots the selected object on an
+azimuth/elevation polar chart: zenith at the center, horizon on the outer
+ring, north up, east right (the usual ground-station orientation, mirrored
+relative to a map). Rings mark 15, 30, 45, 60 and 75 degrees, and the band
+below the elevation mask (Settings, default 10 degrees) is hatched.
+
+![Sky plot with a selected pass](docs/screenshots/sky-plot.png)
+
+- **Now.** The current position and a readout of azimuth, elevation, slant
+  range and range rate (negative = approaching), from `lookAnglesFast` at
+  simulation time.
+- **Live path.** Look angles sampled a quarter orbit (10 to 60 min) either
+  side of now: past in grey, predicted in the category color with arrows for
+  the direction of travel. Only the part above the horizon is drawn; crossings
+  are clipped onto the horizon ring.
+- **Pass marks.** One pass is annotated with AOS, maximum elevation and LOS
+  and their local times: the pass selected in the passes table
+  (`selectedPassId`), else the pass in progress, else the next one. When the
+  object is below the horizon the next pass is still shown, dashed.
+- **Radius.** Linear in zenith angle, `r = R (90 - el) / 90`
+  (`components/sky-plot/sky-projection.ts`, tested in `src/tests/sky-plot/`).
+
+The arc finder (`findSkyArc` in `core/orbit/sky-track.ts`) scans look angles
+at the pass scan step (Settings), bisects AOS and LOS to 0.25 s and refines
+the culmination with a golden-section search. A selected pass is found again
+from its id (`${noradId}-${aosMs}`), so the sky plot needs nothing from the
+passes table but the id. The search result is cached until simulation time
+leaves the interval it is valid for (no arc can start before its AOS, and it
+stays current until its LOS). Like any fixed-step scan it can miss an arc
+shorter than one step, which only affects grazing passes.
+
+**Antenna overlay (not connected to hardware).** `SkyPlot` takes an optional
+`antenna: AntennaPointing` prop (`types/antenna.ts`) with `commanded` and
+`actual` az/el. When given, the chart draws both (commanded dashed amber,
+actual white) and the readout shows the pointing error (actual vs satellite)
+and tracking error (actual vs commanded). Errors are true angular separations
+on the sky (`angularSeparationDeg`), which stay correct near the zenith where
+azimuth differences blow up. The dashboard renders `<SkyPlot />` without it
+today; a rotator controller only has to supply that prop. `SkyPlotChart` is
+exported separately for a future antenna view with its own data.
 
 ## Data source etiquette
 
