@@ -58,6 +58,8 @@ src/
     sky-coordinates.ts Azimuth, elevation, range, range rate
     satellite-propagator.ts  computeSatelliteState, propagateBatch, sampleTrajectory
     pass-prediction.ts AOS / LOS / max-elevation search (scan + bisection + golden section)
+    ground-track.ts    Sub-satellite track, antimeridian splitting, ground heading
+    footprint.ts       Coverage footprint (true min-elevation contour), observer-in-footprint
   services/
     celestrak.ts       CelesTrak GP endpoints, group definitions, typed fetch errors
     satellite-catalog.ts  Cache-first catalog loading, validation, merging
@@ -215,6 +217,62 @@ popover (count, window, scan step) write to the settings store. Clicking a row
 calls `selectPass(id)` and opens `PassDetails.tsx`: AOS / max / LOS events with
 local and UTC times, az/el and slant range, min range, range rate, and an
 elevation profile with the current time marked.
+
+## Ground track and footprint
+
+![Ground track and footprint panel: ISS track over the Indian Ocean, 10 degree footprint, observer inside it](docs/screenshots/ground-track.png)
+
+The panel under the selected-object strip is a second, Earth-fixed Three.js
+globe (`components/ground-track/`). It shows:
+
+- **Ground track**: the sub-satellite point over time, half an orbit of
+  history (grey, fading) and 1 to 3 orbits ahead (cyan, with direction
+  cones). Points come from `computeGroundTrack` (`core/orbit/ground-track.ts`):
+  SGP4 state at each sample time, rotated TEME -> ECEF by GMST at that same
+  time, then converted to WGS84 latitude/longitude. Using each sample's own
+  GMST is what accounts for the Earth's rotation; the ISS track shifts about
+  23 degrees west per revolution, which the tests check. Sampling is about
+  240 points per orbit, clamped to 10 s to 5 min, and at most 24 h each way
+  (so GEO gives a one-day figure-eight, not thousands of samples).
+- **Current sub-satellite point** with latitude, longitude, altitude and
+  ground heading (azimuth of the Earth-relative velocity at the sub-point).
+- **Coverage footprint** for `settings.footprintMinElevationDeg` (the "Min el"
+  slider in the panel header, default 0 = geometric horizon). This is the set
+  of surface points that see the satellite at or above that elevation.
+  `computeFootprint` (`core/orbit/footprint.ts`) uses the Earth central angle
+  `lambda = 90 - e - asin(R cos e / r)` only to bracket a root search: along
+  128 azimuths from the sub-point it bisects until the elevation, computed on
+  the WGS84 ellipsoid against the geodetic vertical (the same definition used
+  for look angles and passes), equals the mask. Every boundary point is on
+  the true contour; tests check this to 1e-6 degrees, including GEO (about 81
+  degrees of central angle at 0 elevation), a sub-point on a pole, and a
+  footprint straddling the date line.
+- **Observer**: a diamond marker. When the observer is inside the footprint
+  (the satellite is at or above the mask from the observer's real location
+  and altitude), the marker, outline and fill turn green and the panel shows
+  "Observer in footprint". The readout also gives the observer's current
+  elevation of the satellite.
+
+Ground track and footprint are different things: the track is where the
+satellite is over time, the footprint is who can see it right now.
+
+Update rates. The track samples are regenerated only when simulation time
+leaves the current window (the window widens with the playback rate); the
+past/future color split is recomputed in the frame loop when time crosses a
+sample. The sub-satellite point and observer visibility are evaluated every
+frame (one SGP4 call for one object). The footprint is recomputed when the
+satellite has moved more than 5 km or the mask changes. The text readout
+refreshes at 2 Hz. "Follow" keeps the camera over the sub-point; dragging the
+globe turns it off.
+
+`splitAtAntimeridian` splits a track into runs that do not jump across
++/-180 degrees, with interpolated crossing points, for any 2D map consumer.
+The 3D globe does not need it.
+
+Base map: [Natural Earth](https://www.naturalearthdata.com/) 1:110m land
+polygons (public domain), stored compactly in
+`src/assets/geo/ne-110m-land.json`, loaded lazily and rasterized to an
+equirectangular canvas texture with a 15-degree graticule.
 
 ## Module contracts
 
