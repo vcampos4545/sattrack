@@ -10,6 +10,7 @@ import { CATEGORY_LABELS } from '../../types/satellite';
 import { CATEGORY_COLORS } from '../../utils/category-colors';
 import { formatNumber } from '../../utils/format';
 import { Panel } from '../layout/Panel';
+import { WebGLGuard } from '../layout/WebGLGuard';
 import { SatelliteFilters } from '../satellite/SatelliteFilters';
 import { GlobeScene } from './GlobeScene';
 import { GlobeToolbar } from './GlobeToolbar';
@@ -36,21 +37,21 @@ export function EarthGlobe() {
   return (
     <Panel title="Orbital view" icon={Earth} className="h-full" actions={<GlobeToolbar />}>
       <div className="relative h-full w-full overflow-hidden bg-[#02040a]">
-        {propagator && (
-          <Canvas
-            flat
-            dpr={[1, 2]}
-            camera={{ fov: 38, near: 0.005, far: 1000, position: [0, 0, 3.4] }}
-            gl={{ antialias: true }}
-            fallback={
-              <p className="flex h-full items-center justify-center text-muted">
-                WebGL is not available in this browser, so the 3D globe cannot be shown.
-              </p>
-            }
-          >
-            <GlobeScene propagator={propagator} labels={labels} />
-          </Canvas>
-        )}
+        <WebGLGuard view="3D globe">
+          {(webgl) =>
+            propagator && (
+              <Canvas
+                flat
+                dpr={[1, 2]}
+                camera={{ fov: 38, near: 0.005, far: 1000, position: [0, 0, 3.4] }}
+                gl={{ antialias: true }}
+                onCreated={webgl.onCreated}
+              >
+                <GlobeScene propagator={propagator} labels={labels} />
+              </Canvas>
+            )
+          }
+        </WebGLGuard>
         <ObserverLabel labels={labels} />
         <HoverLabel labels={labels} />
         <SelectedOverlay />

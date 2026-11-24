@@ -15,6 +15,7 @@ import type { ObserverLocation } from '../../types/observer';
 import { CATEGORY_COLORS } from '../../utils/category-colors';
 import { formatLatitude, formatLongitude, formatNumber } from '../../utils/format';
 import { Panel } from '../layout/Panel';
+import { WebGLGuard } from '../layout/WebGLGuard';
 import { GroundTrackPath } from './GroundTrackPath';
 import { EMPTY_LIVE, useLiveSatelliteDriver, type LiveSatellite } from './live-satellite';
 import { SatelliteFootprint } from './SatelliteFootprint';
@@ -42,7 +43,10 @@ export function GroundTrackGlobe() {
   const record = useSatelliteStore(selectSelectedSatellite);
   const observer = useObserverStore((s) => s.location);
   const minElevationDeg = useSettingsStore((s) => s.footprintMinElevationDeg);
-  const [aheadRevs, setAheadRevs] = useState<number>(1);
+  // Track length is a persisted preference; follow mode is per session (a drag turns it off).
+  const aheadRevs = useSettingsStore((s) => s.groundTrackAheadRevs);
+  const updateSettings = useSettingsStore((s) => s.update);
+  const setAheadRevs = (v: number) => updateSettings({ groundTrackAheadRevs: v });
   const [follow, setFollow] = useState(true);
   const live = useRef<LiveSatellite>({ ...EMPTY_LIVE });
 
@@ -70,7 +74,7 @@ export function GroundTrackGlobe() {
           <Segmented label="Ahead" value={aheadRevs} options={AHEAD_CHOICES} suffix="rev" onChange={setAheadRevs} />
           <button
             type="button"
-            onClick={() => setFollow((f) => !f)}
+            onClick={() => setFollow(!follow)}
             aria-pressed={follow}
             title={follow ? 'Following the sub-satellite point (drag the globe to stop)' : 'Follow the sub-satellite point'}
             className={`flex items-center gap-1 border px-1.5 py-0.5 text-[10px] uppercase tracking-[0.1em] hover:border-line-strong ${follow ? 'border-accent/50 text-accent' : 'border-line text-muted'}`}
@@ -88,8 +92,16 @@ export function GroundTrackGlobe() {
           if (e.buttons !== 0 && follow) setFollow(false);
         }}
       >
-        {/* `flat`: no tone mapping, so map and overlay colors match the CSS design tokens exactly. */}
-        <Canvas flat camera={{ position: initialCamera, fov: 35, near: 0.01, far: 100 }} dpr={[1, 2]} gl={{ antialias: true }}>
+        <WebGLGuard view="Ground track globe">
+          {(webgl) => (
+        /* `flat`: no tone mapping, so map and overlay colors match the CSS design tokens exactly. */
+        <Canvas
+          flat
+          camera={{ position: initialCamera, fov: 35, near: 0.01, far: 100 }}
+          dpr={[1, 2]}
+          gl={{ antialias: true }}
+          onCreated={webgl.onCreated}
+        >
           <GroundTrackScene
             live={live}
             satrec={satrec}
@@ -102,6 +114,8 @@ export function GroundTrackGlobe() {
           />
           <OrbitControls enablePan={false} enableDamping dampingFactor={0.12} rotateSpeed={0.5} minDistance={1.35} maxDistance={8} />
         </Canvas>
+          )}
+        </WebGLGuard>
       </div>
 
       <Legend />

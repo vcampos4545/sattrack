@@ -5,6 +5,7 @@ import { formatLatitude, formatLongitude } from '../../utils/format';
 import { LocationSelector } from '../location/LocationSelector';
 import { CatalogStatus } from '../satellite/CatalogStatus';
 import { SatelliteSearch } from '../satellite/SatelliteSearch';
+import { ErrorBoundary } from './ErrorBoundary';
 import { SettingsMenu } from './SettingsMenu';
 
 type Drawer = 'location' | 'settings' | null;
@@ -44,8 +45,12 @@ export function Header() {
         <Settings className="size-3.5 text-muted" aria-hidden />
       </button>
       {drawer && (
-        <div className="absolute top-full right-4 mt-1 w-[360px] border border-line-strong bg-panel-raised shadow-2xl shadow-black/50">
-          {drawer === 'location' ? <LocationSelector onClose={() => setDrawer(null)} /> : <SettingsMenu onClose={() => setDrawer(null)} />}
+        <div
+          className={`absolute top-full right-4 mt-1 max-h-[calc(100vh-4rem)] overflow-y-auto border border-line-strong bg-panel-raised shadow-2xl shadow-black/50 ${drawer === 'settings' ? 'w-[380px]' : 'w-[360px]'}`}
+        >
+          <ErrorBoundary name={drawer === 'location' ? 'Location panel' : 'Settings'}>
+            {drawer === 'location' ? <LocationSelector onClose={() => setDrawer(null)} /> : <SettingsMenu onClose={() => setDrawer(null)} />}
+          </ErrorBoundary>
         </div>
       )}
     </header>

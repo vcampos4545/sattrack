@@ -16,6 +16,19 @@ function Field({ label, value, className = '' }: { label: string; value: string;
 }
 
 /**
+ * Plain-language consequence of propagating far from the element-set epoch.
+ * SGP4 error grows roughly 1-3 km per day from epoch for LEO (more under
+ * strong drag), so the numbers here are order-of-magnitude guidance.
+ */
+function epochWarning(ageDays: number, freshness: 'aging' | 'stale'): string {
+  const d = formatNumber(Math.abs(ageDays), 1);
+  const where = ageDays >= 0 ? `${d} days after its epoch` : `${d} days before its epoch`;
+  return freshness === 'stale'
+    ? `Stale elements: the displayed time is ${where}. Position, track and pass times may be off by tens of km and minutes. Refresh the data or move the time closer to the epoch.`
+    : `Aging elements: the displayed time is ${where}. Expect errors of several km; pass times may shift by seconds.`;
+}
+
+/**
  * Selected-object strip: identity, live propagated state at simulation time
  * and element-set metadata (inclination, period, epoch age).
  */
@@ -58,6 +71,11 @@ export function SatelliteInfo() {
         value={`${formatUtc(tle.epochMs).slice(0, 16)}Z · ${ageDays >= 0 ? '' : '-'}${formatNumber(Math.abs(ageDays), 1)} d`}
         className={FRESHNESS_CLASS[freshness]}
       />
+      {freshness !== 'fresh' && !error && (
+        <p className={`col-span-full text-[12px] ${freshness === 'stale' ? 'text-danger' : 'text-warn'}`} data-testid="epoch-warning">
+          {epochWarning(ageDays, freshness)}
+        </p>
+      )}
       {error && <p className="col-span-full text-[12px] text-danger">{error}</p>}
     </section>
   );
