@@ -57,19 +57,23 @@ src/
     observer.ts        Observer validation, observer ECEF, ECEF -> ENU
     sky-coordinates.ts Azimuth, elevation, range, range rate
     satellite-propagator.ts  computeSatelliteState, propagateBatch, sampleTrajectory
+    pass-prediction.ts AOS / LOS / max-elevation search (scan + bisection + golden section)
   services/
     celestrak.ts       CelesTrak GP endpoints, group definitions, typed fetch errors
     satellite-catalog.ts  Cache-first catalog loading, validation, merging
     storage.ts         IndexedDB / localStorage with in-memory fallbacks
     geolocation.ts     Browser Geolocation API wrapper with typed failures
     place-search.ts    Offline place search over the bundled GeoNames extract
+    pass-search.ts     Serializable pass-search job (worker and main-thread fallback)
+    pass-scheduler.ts  When to recompute passes; drives the worker
   data/places.json     Bundled place list (built by scripts/build-places.mjs)
+  workers/             pass-prediction.worker.ts
   stores/              Zustand stores (see contracts)
   hooks/               React glue: sim time, catalog bootstrap, selected satellite
   types/               Shared types: satellite, orbital, observer, passes
   components/          One slot file per dashboard panel (see contracts)
   utils/               Formatting, category colors, coordinate input parsing
-  tests/               Vitest suites: orbit/, coordinates/, services/, stores/, location/
+  tests/               Vitest suites: orbit/, coordinates/, passes/, services/, stores/, location/
 ```
 
 ## Coordinate systems and units
@@ -155,6 +159,63 @@ Altitude reference: GeoNames elevations are above mean sea level, while
 is within about ±100 m worldwide and moves LEO elevation angles by well under
 0.01°, so it is documented rather than corrected.
 
+## Pass prediction
+
+`core/orbit/pass-prediction.ts` finds passes from real SGP4 positions. There are
+no approximations or canned tables.
+
+1. **Coarse scan.** Elevation (SGP4 TEME, then GMST to ECEF, then observer ENU)
+   is sampled every `passScanStepS` (default 30 s) for `passSearchDays`
+   (default 7 d). It stops after `passCount` passes. The grid sits on absolute
+   multiples of the step, so a recompute samples the same instants.
+2. **AOS / LOS.** Bisection on `elevation - mask` in each interval that crosses
+   the mask, down to 10 ms.
+3. **Maximum elevation.** Golden-section search around the highest sample,
+   down to 50 ms.
+4. **Grazing passes.** A coarse local maximum within 5° below the mask is
+   refined too. A pass shorter than one step is still found (the tests check
+   that a 300 s scan matches a 5 s scan).
+5. **Pass in progress.** If the satellite is already up at the start, the scan
+   steps back up to one orbit to find and refine the real AOS.
+   `inProgressAtSearchStart` is set only when no rise exists in that span.
+6. **Edge cases.** A satellite that never rises gives `never-above-mask`, with
+   the highest elevation sampled. One that never sets (GEO in view) gives
+   `always-above-mask`. A pass still open at the window end is followed for up
+   to 1 more day to find its LOS.
+
+The observer's latitude, longitude and altitude all enter through observer
+ECEF/ENU. Elevation is geometric, with no refraction.
+
+**Off the main thread.** `services/pass-scheduler.ts` runs the search in
+`workers/pass-prediction.worker.ts`. A 7-day ISS search takes about 6,000 SGP4
+evaluations (around 10 ms). A never-rising object scans the full window. A new
+search starts when the selected satellite, its TLE, the observer, or the
+mask / count / window / step settings change. It is anchored at the current
+simulation time. While time runs, the result is reused. It is recomputed only
+when a pass ends, when the clock moves before the search start, or when a
+window that found fewer than `passCount` passes has slid by an eighth of its
+length. A superseded search is abandoned. A selected pass is followed across
+recomputes by matching its peak time. Without Web Worker support the same job
+runs on the main thread.
+
+**Validation** (`src/tests/passes/`): AOS/LOS sit on the mask and the maximum
+is a true local maximum. Results match an independent 1 s brute-force scan
+that uses satellite.js's own `eciToEcf` / `ecfToLookAngles` (within 2 s and
+0.05°). Further cases: a near-zenith pass with a ~180° azimuth flip, a
+south-polar observer that never sees the ISS, a polar orbiter from 89° N, the
+±180° date line, GEO always visible and never visible, decayed elements,
+mask nesting, and the recompute rules.
+
+**Panel.** `components/passes/UpcomingPasses.tsx` shows the next passes in
+local time (UTC alongside in the details), each with duration, max elevation,
+AOS/LOS azimuth, direction and a countdown. A live strip shows whether the
+object is visible now (above the mask, above the horizon only, or below it)
+and the countdown to the next AOS or LOS. The mask input and a pass-search
+popover (count, window, scan step) write to the settings store. Clicking a row
+calls `selectPass(id)` and opens `PassDetails.tsx`: AOS / max / LOS events with
+local and UTC times, az/el and slant range, min range, range rate, and an
+elevation profile with the current time marked.
+
 ## Module contracts
 
 These are the interfaces later work builds on. Keep them stable or update this
@@ -207,6 +268,19 @@ stores valid input. Persisted.
 **Passes.** `types/passes.ts` defines `Pass` (AOS/LOS/max-elevation times and
 azimuths, duration, `track: PassTrackSample[]`) and its `id`
 (`${noradId}-${aosMs}`), shared by the passes table and the sky plot.
+- `stores/pass-store.ts` holds the predicted passes of the selected satellite:
+  `passes`, `result` (status, search window, diagnostics), `state`
+  (`idle` / `computing` / `ready` / `error`), `refreshing`.
+- Read it with `usePassPredictions()` or `useSelectedPass()`
+  (`hooks/use-pass-predictions.ts`). Either hook keeps the shared scheduler
+  running, so a panel never needs to start it itself.
+- `track` runs from AOS to LOS in time order (about 180 samples, at least 1 s
+  apart) and always contains the exact AOS, maximum and LOS instants.
+- When nothing is selected, the sky plot can show `currentOrNextPass(passes, now)`
+  from `core/orbit/pass-prediction.ts`.
+- Result statuses other than `ok`: `never-above-mask`, `always-above-mask`
+  (for example a geostationary satellite in view) and `propagation-error`.
+  `passes` is empty for all three.
 
 **Dashboard slots.** Each panel is its own file. Replace the slot's contents and
 leave `Dashboard.tsx` / `Header.tsx` alone:
