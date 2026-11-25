@@ -317,7 +317,8 @@ equirectangular canvas texture with a 15-degree graticule.
   (`core/orbit/extrapolation.ts`, < 50 m at 20 s). Markers are hidden rather
   than guessed past 120 s from the last batch or when SGP4 fails.
 - **Orbits.** Selected path from `sampleTrajectory` (past quarter dimmed); "all
-  visible" paths sampled in the worker (`core/orbit/orbit-sampling.ts`). Paths
+  visible" paths sampled in a second worker (`core/orbit/orbit-sampling.ts`),
+  so a long sampling job never delays marker batches. Paths
   regenerate only on selection, element set or setting change, or when the
   clock drifts 20% of the path span.
 - **Interaction.** Drag to rotate, scroll to zoom, hover for name and NORAD id,
@@ -370,8 +371,9 @@ rest; `reset()` restores `DEFAULT_SETTINGS`. Persisted.
   (TEME, ECEF with true Earth-relative velocity, geodetic, inertial speed,
   GMST) or `null`.
 - `propagateBatch(satrecs, timeMs, buffers)` writes TEME positions and
-  velocities into `Float64Array`s for bulk rendering. It is worker-friendly:
-  move it behind a Web Worker without changing callers' data layout.
+  velocities into `Float64Array`s for bulk rendering. The globe runs it in a
+  Web Worker (`components/globe/propagation/`) and receives the buffers as
+  transferables, with the same code on the main thread as the fallback.
 - `sampleTrajectory(satrec, startMs, endMs, stepMs)` for orbit paths
   (`teme`) and ground tracks (`geodetic`).
 - `computeLookAngles(ecefState, observer)` / `lookAnglesAt(satrec, observer, timeMs)`
@@ -608,6 +610,25 @@ first request for a URL downloads real data and stores it in `e2e/.cache/`
 (git-ignored) for 12 hours, so repeated runs stay within CelesTrak's
 once-per-2-hours policy. The run needs network access the first time.
 
+## Performance
+
+Rendering, propagation and catalog work run on separate schedules and
+threads, so the globe keeps drawing at the display rate with thousands of
+objects:
+
+| Work | Where | When |
+|---|---|---|
+| Marker positions (SGP4, all visible objects) | propagation worker | `propagationHz` (default 1 Hz), or sooner when simulation time moves more than 20 s |
+| Marker motion between batches | main thread, per frame | two-body extrapolation into one `Points` buffer (no per-object nodes, no allocation) |
+| "All visible" orbit paths | orbit-sampling worker, started on first use | when the set, length or simulation window changes |
+| Catalog download, parse, SGP4 validation, merge | main thread (async I/O) | launch (cache first), group toggles, refresh |
+| Pass prediction | pass worker | selection, observer, element-set or settings change, or when a pass ends |
+| Text panels | React, 1 to 2 Hz | selectors on stable store slices; 3D views read the clock in their frame loop instead of re-rendering |
+| Ground-track colors and footprint outline | main thread | when they change (every frame in fast playback), written into the existing GPU buffers |
+
+Every worker has a main-thread fallback that runs the same code, so the app
+still works where module workers are unavailable (and in the unit tests).
+
 ## Known limitations
 
 - **TEME to Earth-fixed uses GMST only** (IAU 1982), with UT1 taken as UTC
@@ -626,7 +647,8 @@ once-per-2-hours policy. The run needs network access the first time.
 - **TLE format.** Data is requested as TLE; objects beyond Alpha-5 catalog
   numbers will need the OMM JSON path.
 - **Large groups.** "All active satellites" (about 13,000 objects) works but
-  is opt-in; first load downloads and parses it on the main thread.
+  is opt-in; it is parsed and validated on the main thread when loaded (no
+  dropped frames measured at 5,400 objects; see [Performance](#performance)).
 - **Storage limits.** If the browser evicts IndexedDB, the next launch simply
   downloads again.
 
