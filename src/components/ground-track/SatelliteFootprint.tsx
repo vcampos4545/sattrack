@@ -4,6 +4,7 @@ import { BufferAttribute, BufferGeometry, Color, DoubleSide, Mesh, MeshBasicMate
 import { Line2 } from 'three/examples/jsm/lines/Line2.js';
 import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
+import { updateLinePositions } from './line-buffers';
 import type { LiveSatellite } from './live-satellite';
 import { geoToVector, GT_COLORS, LIFT } from './scene-geometry';
 
@@ -11,6 +12,11 @@ import { geoToVector, GT_COLORS, LIFT } from './scene-geometry';
 const BOUNDARY_POINTS = 128;
 /** Concentric rings in the translucent fill, so large footprints follow the curved surface. */
 const FILL_RINGS = 12;
+
+const outlineScratch = new Float32Array((BOUNDARY_POINTS + 1) * 3);
+const tmpV = new Vector3();
+const tmpCenter = new Vector3();
+const tmpEdge = new Vector3();
 
 /**
  * Coverage footprint of the selected satellite: the boundary from
@@ -77,19 +83,19 @@ export function SatelliteFootprint({ live }: { live: RefObject<LiveSatellite> })
       outline.visible = ok;
       fill.visible = ok;
       if (fp && ok) {
-        // Outline: closed loop.
-        const pts = new Float32Array((BOUNDARY_POINTS + 1) * 3);
-        const v = new Vector3();
+        // Outline: closed loop, written in place (it changes every frame in fast playback).
+        const pts = outlineScratch;
+        const v = tmpV;
         for (let i = 0; i <= BOUNDARY_POINTS; i++) {
           const b = fp.boundary[i % BOUNDARY_POINTS]!;
           geoToVector(b.latitudeDeg, b.longitudeDeg, LIFT.footprintLine, v).toArray(pts, i * 3);
         }
-        outline.geometry.setPositions(pts);
+        updateLinePositions(outline.geometry, pts);
 
         // Fill: interpolate from the sub-satellite direction to each boundary
         // direction and push back onto the sphere.
-        const center = geoToVector(fp.subSatellite.latitudeDeg, fp.subSatellite.longitudeDeg, 1);
-        const edge = new Vector3();
+        const center = geoToVector(fp.subSatellite.latitudeDeg, fp.subSatellite.longitudeDeg, 1, tmpCenter);
+        const edge = tmpEdge;
         const pos = fill.geometry.getAttribute('position') as BufferAttribute;
         for (let i = 0; i < BOUNDARY_POINTS; i++) {
           const b = fp.boundary[i]!;

@@ -6,6 +6,7 @@ import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { splitIndex, type GroundTrackPoint } from '../../core/orbit/ground-track';
 import { getSimTimeMs } from '../../stores/time-store';
+import { updateLineColors } from './line-buffers';
 import { geoArrayToPositions, GT_COLORS, LIFT } from './scene-geometry';
 
 interface GroundTrackPathProps {
@@ -18,6 +19,11 @@ interface GroundTrackPathProps {
 /** One direction arrow every this many samples (~12 per revolution at the default spacing). */
 const ARROW_EVERY = 20;
 const MAX_ARROWS = 256;
+
+const PAST = new Color(GT_COLORS.past);
+const FUTURE = new Color(GT_COLORS.future);
+const FADE = new Color(GT_COLORS.fade);
+const tmpColor = new Color();
 
 /**
  * Past and predicted ground track as one fat polyline with per-vertex colors.
@@ -44,6 +50,8 @@ export function GroundTrackPath({ points, pastMs, futureMs }: GroundTrackPathPro
   /** Candidate arrow transforms along the whole sampled track, in time order. */
   const arrowSlots = useRef<{ timeMs: number; matrix: Matrix4 }[]>([]);
   const lastSplit = useRef(-1);
+  /** Reused per-vertex color scratch; reallocated only when the track length changes. */
+  const colorScratch = useRef(new Float32Array(0));
 
   useEffect(
     () => () => {
@@ -89,19 +97,18 @@ export function GroundTrackPath({ points, pastMs, futureMs }: GroundTrackPathPro
     if (split === lastSplit.current) return;
     lastSplit.current = split;
 
-    const past = new Color(GT_COLORS.past);
-    const future = new Color(GT_COLORS.future);
-    const fade = new Color(GT_COLORS.fade);
-    const c = new Color();
-    const colors = new Float32Array(points.length * 3);
+    if (colorScratch.current.length !== points.length * 3) colorScratch.current = new Float32Array(points.length * 3);
+    const colors = colorScratch.current;
+    const c = tmpColor;
     for (let i = 0; i < points.length; i++) {
       const dt = points[i]!.timeMs - now;
       // 0 next to "now", 1 at the end of the configured window (and beyond).
       const f = dt <= 0 ? Math.min(1, -dt / Math.max(1, pastMs)) : Math.min(1, dt / Math.max(1, futureMs));
-      c.copy(dt <= 0 ? past : future).lerp(fade, dt <= 0 ? 0.15 + 0.8 * f : 0.75 * f * f);
+      c.copy(dt <= 0 ? PAST : FUTURE).lerp(FADE, dt <= 0 ? 0.15 + 0.8 * f : 0.75 * f * f);
       c.toArray(colors, i * 3);
     }
-    line.geometry.setColors(colors);
+    // During fast playback the split moves every frame: write in place.
+    updateLineColors(line.geometry, colors);
 
     // Arrows on the predicted track, within the future window only.
     let count = 0;
