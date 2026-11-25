@@ -75,9 +75,12 @@ export function summarizeCatalogHealth(input: CatalogHealthInput): CatalogHealth
   let headline: string | null = null;
   if (input.loadState === 'error' || (empty && input.loadState === 'ready')) {
     level = 'error';
+    const cause = failedSources[0]?.error;
     headline = offlineBrowser
       ? 'Offline and no cached orbital data yet. Connect once to download element sets from CelesTrak.'
-      : (input.loadError ?? 'No orbital data could be loaded.');
+      : cause
+        ? `No orbital data loaded: ${cause}. Nothing is cached yet to fall back on.`
+        : (input.loadError ?? 'No orbital data could be loaded.');
   } else if (servingCacheAfterError) {
     level = 'warn';
     headline = 'CelesTrak could not be reached. Showing cached element sets.';

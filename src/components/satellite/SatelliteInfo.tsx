@@ -6,9 +6,9 @@ import { formatLatitude, formatLongitude, formatNumber, formatUtc } from '../../
 
 const FRESHNESS_CLASS = { fresh: 'text-ok', aging: 'text-warn', stale: 'text-danger' } as const;
 
-function Field({ label, value, className = '' }: { label: string; value: string; className?: string }) {
+function Field({ label, value, className = '', wide = false }: { label: string; value: string; className?: string; wide?: boolean }) {
   return (
-    <div className="min-w-0">
+    <div className={`min-w-0 ${wide ? 'xl:col-span-2' : ''}`} title={value}>
       <div className="text-[10px] uppercase tracking-[0.12em] text-faint">{label}</div>
       <div className={`truncate font-mono text-[13px] tabular ${className}`}>{value}</div>
     </div>
@@ -49,7 +49,10 @@ export function SatelliteInfo() {
   const freshness = classifyEpochAge(tle.epochMs, timeMs);
 
   return (
-    <section className="grid grid-cols-2 gap-x-6 gap-y-2 border border-line bg-panel px-4 py-2.5 sm:grid-cols-4 xl:grid-cols-10">
+    <section
+      data-testid="selected-object"
+      className="grid grid-cols-2 gap-x-6 gap-y-2 border border-line bg-panel px-4 py-2.5 sm:grid-cols-4 xl:grid-cols-11"
+    >
       <div className="col-span-2 min-w-0">
         <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.12em] text-faint">
           <span className="inline-block size-2" style={{ background: CATEGORY_COLORS[record.category] }} />
@@ -61,12 +64,14 @@ export function SatelliteInfo() {
       <Field label="Altitude" value={state ? `${formatNumber(state.geodetic.altitudeKm, 1)} km` : 'n/a'} />
       <Field label="Speed (inertial)" value={state ? `${formatNumber(state.inertialSpeedKmS, 3)} km/s` : 'n/a'} />
       <Field
+        wide
         label="Sub-point"
         value={state ? `${formatLatitude(state.geodetic.latitudeDeg, 2)} ${formatLongitude(state.geodetic.longitudeDeg, 2)}` : 'n/a'}
       />
       <Field label="Inclination" value={`${tle.inclinationDeg.toFixed(2)}°`} />
       <Field label="Period" value={`${formatNumber(tle.periodMin, 1)} min`} />
       <Field
+        wide
         label="Epoch"
         value={`${formatUtc(tle.epochMs).slice(0, 16)}Z · ${ageDays >= 0 ? '' : '-'}${formatNumber(Math.abs(ageDays), 1)} d`}
         className={FRESHNESS_CLASS[freshness]}

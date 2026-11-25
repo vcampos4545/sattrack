@@ -63,8 +63,16 @@ describe('summarizeCatalogHealth', () => {
   });
 
   it('is an error with an offline-specific message when nothing could be loaded', () => {
-    const base = input({ satellites: [], groupStatus: [group({ source: 'none', error: 'x', fetchedAtMs: null, recordCount: 0 })], loadState: 'error', loadError: 'No satellite data available' });
-    expect(summarizeCatalogHealth(base).headline).toBe('No satellite data available');
+    const base = input({
+      satellites: [],
+      groupStatus: [group({ source: 'none', error: 'CelesTrak unreachable: Failed to fetch', fetchedAtMs: null, recordCount: 0 })],
+      loadState: 'error',
+      loadError: 'No satellite data available',
+    });
+    expect(summarizeCatalogHealth(base).headline).toBe(
+      'No orbital data loaded: CelesTrak unreachable: Failed to fetch. Nothing is cached yet to fall back on.',
+    );
+    expect(summarizeCatalogHealth({ ...base, groupStatus: [] }).headline).toBe('No satellite data available');
     const offline = summarizeCatalogHealth({ ...base, browserOnline: false });
     expect(offline.level).toBe('error');
     expect(offline.headline).toMatch(/Offline and no cached/);

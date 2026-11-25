@@ -14,8 +14,8 @@ interface Notice {
 }
 
 const TONE = {
-  warn: 'border-warn/30 bg-warn/5 text-warn',
-  danger: 'border-danger/30 bg-danger/5 text-danger',
+  warn: 'border-warn/30 bg-warn/[0.07] text-warn',
+  danger: 'border-danger/35 bg-danger/[0.08] text-danger',
   info: 'border-line bg-panel text-muted',
 } as const;
 
@@ -84,9 +84,9 @@ export function NoticeBar() {
   if (shown.length === 0) return null;
 
   return (
-    <div role="status" className="flex flex-col gap-px bg-line px-px pt-px">
+    <div role="status" className="flex flex-col">
       {shown.map((n) => (
-        <div key={n.key} className={`flex items-center gap-2 border px-3 py-1.5 text-[12px] ${TONE[n.tone]}`} data-testid="notice">
+        <div key={n.key} className={`flex items-center gap-2 border-b px-4 py-1.5 text-[12px] ${TONE[n.tone]}`} data-testid="notice">
           <n.icon className="size-3.5 shrink-0" aria-hidden />
           <span className="min-w-0 flex-1 text-ink/90">{n.text}</span>
           {n.action && (
