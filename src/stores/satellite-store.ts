@@ -83,6 +83,8 @@ export interface SatelliteState extends PersistedSatelliteState {
   /** Track an object by NORAD id. Downloads it individually if no enabled group contains it. */
   trackNoradId(noradId: number): void;
   untrack(noradId: number): void;
+  /** Re-track every object the user removed from its groups. */
+  restoreUntracked(): void;
   setCategoryVisible(category: SatelliteCategory, visible: boolean): void;
   select(noradId: number | null): void;
   selectPass(passId: string | null): void;
@@ -189,6 +191,11 @@ export const useSatelliteStore = create<SatelliteState>()(
           ...derive(s.satellites, untrackedIds, s.categoryFilter),
           ...(s.selectedId === noradId ? { selectedId: null, selectedPassId: null } : {}),
         });
+      },
+
+      restoreUntracked: () => {
+        const s = get();
+        set({ untrackedIds: [], ...derive(s.satellites, [], s.categoryFilter) });
       },
 
       setCategoryVisible: (category, visible) => {

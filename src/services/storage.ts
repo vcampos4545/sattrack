@@ -93,17 +93,50 @@ export function withMemoryFallback(primary: KeyValueStore, onFallback?: (err: un
   };
 }
 
+/**
+ * Which backends persistence actually ended up on. `memory` means data lasts
+ * only for this page session; the UI tells the user (see NoticeBar).
+ */
+export interface StorageStatus {
+  cache: 'indexeddb' | 'memory';
+  preferences: 'localStorage' | 'memory';
+}
+
+const storageStatus: StorageStatus = { cache: 'indexeddb', preferences: 'localStorage' };
+const storageListeners = new Set<() => void>();
+let storageSnapshot: StorageStatus = { ...storageStatus };
+
+function setStorageStatus(patch: Partial<StorageStatus>): void {
+  Object.assign(storageStatus, patch);
+  storageSnapshot = { ...storageStatus };
+  storageListeners.forEach((l) => l());
+}
+
+/** Current storage backends. Stable object until a fallback happens. */
+export function getStorageStatus(): StorageStatus {
+  return storageSnapshot;
+}
+
+/** Subscribe to storage fallbacks (for `useSyncExternalStore`). */
+export function subscribeStorageStatus(listener: () => void): () => void {
+  storageListeners.add(listener);
+  return () => storageListeners.delete(listener);
+}
+
 let defaultCache: KeyValueStore | null = null;
 
 /** The app-wide cache store: IndexedDB when available, otherwise memory. */
 export function getDefaultCacheStore(): KeyValueStore {
   if (!defaultCache) {
-    defaultCache =
-      typeof indexedDB === 'undefined'
-        ? createMemoryStore()
-        : withMemoryFallback(createIndexedDbStore(), (err) =>
-            console.warn('[storage] IndexedDB unavailable, caching in memory for this session', err),
-          );
+    if (typeof indexedDB === 'undefined') {
+      setStorageStatus({ cache: 'memory' });
+      defaultCache = createMemoryStore();
+    } else {
+      defaultCache = withMemoryFallback(createIndexedDbStore(), (err) => {
+        console.warn('[storage] IndexedDB unavailable, caching in memory for this session', err);
+        setStorageStatus({ cache: 'memory' });
+      });
+    }
   }
   return defaultCache;
 }
@@ -135,8 +168,10 @@ export function safeLocalStorage(): SyncStorage {
     ls.setItem(probe, '1');
     ls.removeItem(probe);
     syncStorage = ls;
-  } catch {
+  } catch (err) {
+    console.warn('[storage] localStorage unavailable, preferences last only for this session', err);
     syncStorage = memoryStorage();
+    setStorageStatus({ preferences: 'memory' });
   }
   return syncStorage;
 }

@@ -29,6 +29,8 @@ export interface Settings {
   propagationHz: number;
   /** Re-download GP data when the cache is older than this, hours. Floor: 2 h (CelesTrak policy). */
   autoRefreshHours: number;
+  /** Predicted ground track length on the secondary globe, orbital periods (1-3). */
+  groundTrackAheadRevs: number;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -44,16 +46,23 @@ export const DEFAULT_SETTINGS: Settings = {
   showTerminator: true,
   propagationHz: 1,
   autoRefreshHours: 12,
+  groundTrackAheadRevs: 1,
 };
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
-/** Clamps numeric settings to sane ranges. Non-finite input keeps the previous value. */
+/**
+ * Clamps numeric settings to sane ranges and type-checks the rest. Invalid
+ * input (non-finite numbers, wrong types from a corrupted or older stored
+ * copy) keeps the previous value.
+ */
 export function sanitizeSettings(next: Settings, prev: Settings = DEFAULT_SETTINGS): Settings {
   const num = (key: keyof Settings, lo: number, hi: number) => {
     const v = next[key] as number;
     return Number.isFinite(v) ? clamp(v, lo, hi) : (prev[key] as number);
   };
+  const bool = (key: 'showOrbits' | 'showLatLonGrid' | 'showTerminator') =>
+    typeof next[key] === 'boolean' ? next[key] : prev[key];
   return {
     ...next,
     elevationMaskDeg: num('elevationMaskDeg', 0, 89),
@@ -64,6 +73,11 @@ export function sanitizeSettings(next: Settings, prev: Settings = DEFAULT_SETTIN
     orbitLengthPeriods: num('orbitLengthPeriods', 0.1, 10),
     propagationHz: num('propagationHz', 0.1, 30),
     autoRefreshHours: num('autoRefreshHours', 2, 24 * 7),
+    groundTrackAheadRevs: Math.round(num('groundTrackAheadRevs', 1, 3)),
+    showOrbits: bool('showOrbits'),
+    showLatLonGrid: bool('showLatLonGrid'),
+    showTerminator: bool('showTerminator'),
+    orbitScope: next.orbitScope === 'all' || next.orbitScope === 'selected' ? next.orbitScope : prev.orbitScope,
   };
 }
 

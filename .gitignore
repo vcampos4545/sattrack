@@ -6,3 +6,8 @@ coverage
 .DS_Store
 *.tsbuildinfo
 .vite
+
+# Playwright
+e2e/.cache
+e2e/.results
+playwright-report

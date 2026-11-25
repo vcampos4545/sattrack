@@ -5,12 +5,27 @@ orbital elements from [CelesTrak](https://celestrak.org/), propagates them with
 SGP4 in the browser, and converts the results into Earth-fixed, geodetic and
 observer-relative coordinates. There is no backend, account or API key.
 
-This is the **foundation** build: project scaffold, dashboard shell, shared
-types and stores, the CelesTrak catalog service, and the orbital mechanics
-core with tests. The globe, location panel, ground track, passes, sky plot and
-time controls are built on top of it as separate pieces of work (see
-[Module contracts](#module-contracts)). Their panels currently say so instead
-of showing placeholder data.
+What it does:
+
+- **Primary 3D globe** with every tracked object at its SGP4 position, orbit
+  paths, the observer, a lat/lon grid and the day/night terminator.
+- **Search and catalog** by name, NORAD id or designator; category filters;
+  add or remove objects; CelesTrak groups on demand.
+- **Observer location** from the browser, an offline place search, or manual
+  latitude / longitude / altitude.
+- **Ground track and footprint** on a second globe, with the true
+  minimum-elevation coverage contour and observer visibility.
+- **Upcoming passes** (AOS, LOS, max elevation, azimuths, direction,
+  countdown) from a real scan-and-refine search.
+- **Local sky plot** (az/el polar chart) with the live path and pass marks,
+  ready for antenna pointing overlays.
+- **Time controls**: pause, step, speed, reverse, jump, back to live. Every
+  view follows the simulation clock.
+- **Settings, persistence, offline operation and error handling** (see
+  [Settings and persistence](#settings-and-persistence) and
+  [Data refresh, offline use and errors](#data-refresh-offline-use-and-errors)).
+
+![Dashboard with the ISS selected](docs/screenshots/dashboard.jpg)
 
 ## Running locally
 
@@ -18,10 +33,15 @@ Requires Node.js 22.12 or newer.
 
 ```sh
 npm install
-npm run dev      # http://localhost:5173
-npm test         # Vitest, core math and services
-npm run build    # type-check + production build into dist/
+npm run dev        # http://localhost:5173
+npm test           # Vitest: orbital math, services, stores (about 260 tests, ~1 s)
+npm run build      # type-check + production build into dist/
+npm run test:e2e   # build, then Playwright smoke tests against `vite preview`
 ```
+
+The end-to-end tests need a browser once: `npx playwright install chromium`,
+or use an installed Google Chrome with `PW_CHANNEL=chrome npm run test:e2e`.
+See [Testing](#testing).
 
 On first launch the app downloads the default catalog groups (space stations,
 weather, GPS operational, amateur radio, science; about 250 objects) and caches
@@ -64,7 +84,8 @@ src/
   services/
     celestrak.ts       CelesTrak GP endpoints, group definitions, typed fetch errors
     satellite-catalog.ts  Cache-first catalog loading, validation, merging
-    storage.ts         IndexedDB / localStorage with in-memory fallbacks
+    storage.ts         IndexedDB / localStorage with in-memory fallbacks and fallback status
+    catalog-health.ts  Data age, offline state, epoch-age counts, retry timing (pure)
     geolocation.ts     Browser Geolocation API wrapper with typed failures
     place-search.ts    Offline place search over the bundled GeoNames extract
     pass-search.ts     Serializable pass-search job (worker and main-thread fallback)
@@ -76,7 +97,8 @@ src/
   types/               Shared types: satellite, orbital, observer, passes, antenna
   components/          One slot file per dashboard panel (see contracts)
   utils/               Formatting, category colors, coordinate input parsing
-  tests/               Vitest suites: orbit/, coordinates/, passes/, services/, stores/, location/, sky-plot/
+  tests/               Vitest suites: orbit/, coordinates/, passes/, services/, stores/, location/, sky-plot/, time/
+e2e/                   Playwright smoke tests (real CelesTrak data via an on-disk cache)
 ```
 
 ## Coordinate systems and units
@@ -327,7 +349,7 @@ display only (the time bar's offset from real time).
 - `selectedId`, `select(id)`, `selectedPassId`, `selectPass(id)`. Changing the
   selection clears the pass. Use `selectSelectedSatellite` as the selector.
 - `trackNoradId(id)` (downloads by catalog number if needed), `untrack(id)`,
-  `setCategoryVisible`, `setGroupEnabled`, `loadCatalog({ force })`.
+  `restoreUntracked()`, `setCategoryVisible`, `setGroupEnabled`, `loadCatalog({ force })`.
 - Status: `loadState`, `loadError`, `groupStatus`, `lastLoadedAtMs`.
 
 **Observer.** `stores/observer-store.ts`: `location: ObserverLocation`
@@ -338,8 +360,9 @@ stores valid input. Persisted.
 **Settings.** `stores/settings-store.ts`: `elevationMaskDeg` (default 10),
 `footprintMinElevationDeg`, `passCount`, `passSearchDays`, `passScanStepS`,
 `showOrbits`, `orbitScope`, `orbitLengthPeriods`, `showLatLonGrid`,
-`showTerminator`, `propagationHz` (default 1), `autoRefreshHours`.
-`update(patch)` clamps values. Persisted.
+`showTerminator`, `propagationHz` (default 1), `autoRefreshHours`,
+`groundTrackAheadRevs`. `update(patch)` clamps numbers and type-checks the
+rest; `reset()` restores `DEFAULT_SETTINGS`. Persisted.
 
 **Orbit math.** Import from `core/orbit/*`, never from satellite.js directly:
 - `satrecFor(tle)` returns a cached SGP4 record per `TleRecord` object.
@@ -372,8 +395,9 @@ azimuths, duration, `track: PassTrackSample[]`) and its `id`
   (for example a geostationary satellite in view) and `propagation-error`.
   `passes` is empty for all three.
 
-**Dashboard slots.** Each panel is its own file. Replace the slot's contents and
-leave `Dashboard.tsx` / `Header.tsx` alone:
+**Dashboard slots.** Each panel is its own file, wrapped in its own
+`ErrorBoundary` by `Dashboard.tsx`. Replace the slot's contents and leave
+`Dashboard.tsx` / `Header.tsx` alone:
 
 | Slot | File |
 |---|---|
@@ -470,3 +494,139 @@ The app requests TLE format. Catalog numbers above 99999 use Alpha-5 encoding,
 which the parser decodes. Moving to OMM JSON (`FORMAT=json`, supported by
 `satellite.js`'s `json2satrec`) is the long-term path once the catalog
 outgrows TLEs.
+
+## Settings and persistence
+
+The gear button in the header opens one settings panel with every persisted
+setting, grouped by what it affects:
+
+<img src="docs/screenshots/settings.png" alt="Settings panel" width="380">
+
+| Group | Settings | Default |
+|---|---|---|
+| Passes and sky plot | Elevation mask, passes to predict, search window, coarse scan step | 10°, 10, 7 d, 30 s |
+| Ground track and footprint | Footprint minimum elevation, predicted track length | 0°, 1 rev |
+| Globe | Orbit paths on/off, selected or all visible, orbit length, lat/lon grid, day/night terminator | on, selected, 1 rev, on, on |
+| Performance | SGP4 update rate for the bulk propagation | 1 Hz |
+| Orbital data | Catalog groups, auto-refresh interval, refresh now | 5 groups, 12 h |
+
+The same values can also be changed inline on the panels that use them (the
+mask on the passes panel, the orbit toggles on the globe, the footprint slider
+on the ground track). Both write to `stores/settings-store.ts`, so they never
+disagree. "Reset to defaults" asks for a second click and resets settings
+only, not the location, tracked list or cached data.
+
+What is stored where:
+
+| Data | Where | Key |
+|---|---|---|
+| Settings | localStorage | `sattrack.settings.v1` |
+| Observer location | localStorage | `sattrack.observer.v1` |
+| Enabled groups, removed and added objects, category filters, selection | localStorage | `sattrack.satellites.v1` |
+| Downloaded TLE text and download time, per group / NORAD id | IndexedDB `sattrack` / `kv` | `tle:group:<id>`, `tle:catnr:<id>` |
+
+Stored values are validated on load: numbers are clamped, wrong types and
+unparseable JSON fall back to defaults, and fields added in a later version
+get their defaults. If localStorage or IndexedDB is unavailable (private
+browsing, blocked storage) the app runs on in-memory storage and a notice says
+what will not survive the session. The settings panel also lists objects
+removed from their groups (with "Restore all") and objects added by NORAD id.
+
+## Data refresh, offline use and errors
+
+**Refresh.** On launch the catalog comes from IndexedDB when it is younger
+than the auto-refresh interval; otherwise it is downloaded. A background
+check every 5 minutes reloads once the interval has passed. Manual refresh
+(header button or "Refresh now") skips the interval but still honors
+CelesTrak's 2-hour floor. The header shows the object count, how long ago the
+data was downloaded and the most important warning; hovering gives the exact
+download time and per-group status. The settings panel shows the last update
+in local time.
+
+**Offline.** If a download fails and a cached copy exists, the cached element
+sets are used, the header shows `offline · cached` and a notice bar explains
+that positions and passes are still computed from them. Failed downloads are
+retried every 15 minutes and immediately when the browser reports it is
+back online. With no cache at all, the notice gives the actual error and a
+Retry button; the globe says the catalog is empty instead of drawing
+anything.
+
+**Element-set freshness.** Epoch age is measured against the simulation time,
+not the wall clock, so it also catches jumping far into the future or past.
+`classifyEpochAge`: fresh under 3 days, aging under 14, stale beyond. The
+selected-object strip colors the epoch and, when aging or stale, says what
+that means for accuracy. The header counts stale element sets, the settings
+panel shows fresh / aging / stale / rejected counts, and when every element
+set is stale a notice says so. Records that fail validation or SGP4
+initialization are dropped and counted, never patched.
+
+**Errors.** Each dashboard panel and each header drawer has its own error
+boundary: a crash shows the panel name, the message and a Retry button, and
+the rest of the dashboard keeps working. The two 3D views check for WebGL
+first and say so when it is missing, show the renderer error if creating the
+WebGL context fails, and offer a Retry when the GPU drops the context.
+Passes, the sky plot and the selected-object data do not need WebGL.
+Geolocation failures (no API, insecure context, denied, no fix, timeout) each
+have their own message in the location panel. Catalog, storage and WebGL
+problems are logged to the console with a `[catalog]`, `[storage]`,
+`[webgl]` or `[ui]` prefix.
+
+## Testing
+
+**Unit tests** (`npm test`, Vitest, Node). They cover the orbital core
+against published references (Vallado SGP4 vectors, GMST and TEME to PEF
+examples, an independent satellite.js look-angle path), the services, and
+the stores. Spec edge cases and where they are tested:
+
+| Case | Tests |
+|---|---|
+| International Date Line | `coordinates/edge-cases`, `coordinates/transformations`, `orbit/ground-track`, `orbit/footprint`, `passes/pass-prediction` |
+| Directly overhead | `coordinates/edge-cases` (zenith, ISS pass in progress overhead), `coordinates/look-angles`, `passes/pass-prediction` |
+| Close to the horizon | `coordinates/edge-cases` (0° plane, below horizon, grazing pass 0.05° over the mask), `sky-plot/projection` |
+| Polar observers | `coordinates/edge-cases` (GEO invisible from the pole, footprint over the pole), `coordinates/look-angles`, `passes/pass-prediction` |
+| Geostationary | `coordinates/edge-cases` (zenith, due south / north), `orbit/propagator`, `orbit/footprint`, `orbit/ground-track`, `passes/pass-prediction` |
+| Never above the mask | `passes/pass-prediction`, `coordinates/edge-cases` |
+| Pass in progress | `coordinates/edge-cases`, `passes/pass-prediction`, `passes/pass-scheduler` |
+| Time zones | `time/time-zones` (half-hour and 45-minute offsets, DST change, date rollover), `time/time-controls` |
+| Persistence | `stores/persistence` (reload round trips, corrupted and older stored data) |
+| Data health | `services/catalog-health`, `services/satellite-catalog` |
+
+**End-to-end smoke tests** (`npm run test:e2e`, Playwright, `e2e/`). They run
+the production build in Chromium with software WebGL and check that:
+
+- real data loads and every panel renders (globe canvas drawn, ISS altitude
+  330 to 460 km, speed 7.5 to 7.8 km/s, inclination 51.6°, at least 5 passes,
+  sky plot, ground track), with no uncaught page errors;
+- settings, the manual location and the selection survive a reload, and
+  reset to defaults persists;
+- offline with no cache shows the error and Retry recovers;
+- offline with an expired cache falls back to it and says so;
+- without WebGL, both 3D views explain why and the other panels still work.
+
+CelesTrak requests in these tests go through `e2e/celestrak-cache.ts`: the
+first request for a URL downloads real data and stores it in `e2e/.cache/`
+(git-ignored) for 12 hours, so repeated runs stay within CelesTrak's
+once-per-2-hours policy. The run needs network access the first time.
+
+## Known limitations
+
+- **TEME to Earth-fixed uses GMST only** (IAU 1982), with UT1 taken as UTC
+  and no polar motion. Error is under about 0.5 km, well below SGP4's own
+  error, but this is not a full IAU 2006/2000A ITRF reduction.
+- **SGP4 accuracy** is about 1 km at epoch and grows by a few km per day.
+  Element sets more than a couple of weeks from the displayed time are
+  flagged, not corrected. Decayed objects stop propagating and are reported.
+- **Geometric elevation only.** No atmospheric refraction (about 0.5° at the
+  horizon), so real AOS is a little earlier and LOS a little later than shown.
+- **No optical visibility.** Passes are geometric; whether the satellite is
+  sunlit and the observer is in darkness is not computed.
+- **Altitude reference.** Place elevations are above mean sea level but used
+  as height above the WGS84 ellipsoid (up to about ±100 m difference;
+  negligible for look angles).
+- **TLE format.** Data is requested as TLE; objects beyond Alpha-5 catalog
+  numbers will need the OMM JSON path.
+- **Large groups.** "All active satellites" (about 13,000 objects) works but
+  is opt-in; first load downloads and parses it on the main thread.
+- **Storage limits.** If the browser evicts IndexedDB, the next launch simply
+  downloads again.
+
