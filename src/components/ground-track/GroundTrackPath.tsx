@@ -6,7 +6,7 @@ import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { splitIndex, type GroundTrackPoint } from '../../core/orbit/ground-track';
 import { getSimTimeMs } from '../../stores/time-store';
-import { updateLineColors } from './line-buffers';
+import { updateLineColors, updateLinePositions } from './line-buffers';
 import { geoArrayToPositions, GT_COLORS, LIFT } from './scene-geometry';
 
 interface GroundTrackPathProps {
@@ -67,7 +67,8 @@ export function GroundTrackPath({ points, pastMs, futureMs }: GroundTrackPathPro
   useEffect(() => {
     if (points.length < 2) return;
     const positions = geoArrayToPositions(points, LIFT.track);
-    line.geometry.setPositions(positions);
+    // Grows the GPU buffers when the track gets longer (e.g. more revolutions ahead).
+    updateLinePositions(line.geometry, positions);
     line.computeLineDistances();
 
     const up = new Vector3(0, 1, 0);
