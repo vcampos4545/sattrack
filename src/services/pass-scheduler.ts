@@ -1,31 +1,42 @@
 /**
- * Decides when to (re)compute passes and runs the search in a Web Worker.
+ * Decides when to (re)compute passes and runs the searches in Web Workers.
  *
- * Inputs: selected satellite (its TLE), observer location, and the settings
- * `elevationMaskDeg`, `passCount`, `passSearchDays`, `passScanStepS`. A
- * change to any of them starts a new search anchored at the current
- * simulation time. Otherwise the existing result is reused as simulation time
- * advances, and only recomputed when `needsRecompute` says it has gone stale:
- * a pass ended (so the list is short by one), the clock moved before the
- * search start, or the search window has slid far enough to reveal new passes.
+ * Two modes, from the satellite store's `trackedOnly` filter:
+ * - selected: one search for the selected satellite.
+ * - tracked: one search per Tracked-list satellite, merged into one schedule
+ *   sorted by AOS (`mergePassSchedule`).
  *
- * Only one search runs at a time. A search for outdated inputs is abandoned
- * (the worker is restarted) and late responses are ignored by request id.
- * When Web Workers are unavailable the search runs on the main thread in a
- * macrotask, which is slower but correct.
+ * Inputs per satellite: its TLE, the observer location, and the settings
+ * `elevationMaskDeg`, `passCount`, `passSearchDays`, `passScanStepS`. Each
+ * satellite's result is cached under a key of those inputs, so adding one
+ * object to the Tracked list searches only that object, and toggling the
+ * filter reuses results that are still valid. A cached result is reused as
+ * simulation time advances, and only recomputed when `needsRecompute` says it
+ * has gone stale: a pass ended (so the list is short by one), the clock moved
+ * before the search start, or the search window has slid far enough to
+ * reveal new passes.
+ *
+ * Searches run on a small pool of workers (one search per worker at a time;
+ * the selected mode uses one). A search for inputs that are no longer
+ * current is abandoned (its worker is terminated) and late responses are
+ * ignored by request id. When Web Workers are unavailable the searches run on
+ * the main thread, one per macrotask, which is slower but correct.
  */
 import type { PassSearchResult } from '../core/orbit/pass-prediction';
 import { selectSelectedSatellite, useSatelliteStore } from '../stores/satellite-store';
 import { useObserverStore } from '../stores/observer-store';
-import { INITIAL_PASS_STATE, usePassStore } from '../stores/pass-store';
+import { INITIAL_PASS_STATE, mergePassSchedule, usePassStore, type PassScheduleMode } from '../stores/pass-store';
 import { useSettingsStore } from '../stores/settings-store';
 import { getSimTimeMs, useTimeStore } from '../stores/time-store';
 import type { Pass } from '../types/passes';
+import type { SatelliteRecord } from '../types/satellite';
 import type { PassSearchRequest, PassSearchResponse } from './pass-search';
 import { runPassSearch } from './pass-search';
 
-/** How often simulation time is checked against the current result. */
+/** How often simulation time is checked against the current results. */
 const TIME_CHECK_INTERVAL_MS = 1000;
+/** Upper bound on pass-search workers for the Tracked list. */
+const MAX_WORKERS = 3;
 
 /**
  * True when a result computed earlier no longer describes "the next passes
@@ -59,26 +70,41 @@ export function matchPass(previous: Pass, candidates: readonly Pass[]): Pass | n
   );
 }
 
-interface Inputs {
+type SearchOptions = Omit<PassSearchRequest['options'], 'startMs'>;
+
+interface Job {
+  /** Every input of the search; a change means a new search. */
   key: string;
-  request: Omit<PassSearchRequest, 'id' | 'options'> & { options: Omit<PassSearchRequest['options'], 'startMs'> };
+  noradId: number;
+  line1: string;
+  line2: string;
 }
 
-function readInputs(): Inputs | null {
-  const record = selectSelectedSatellite(useSatelliteStore.getState());
-  if (!record) return null;
+interface Inputs {
+  mode: PassScheduleMode;
+  jobs: Job[];
+  observer: PassSearchRequest['observer'];
+  options: SearchOptions;
+}
+
+function readInputs(): Inputs {
+  const sat = useSatelliteStore.getState();
+  const mode: PassScheduleMode = sat.trackedOnly ? 'tracked' : 'selected';
+  let records: SatelliteRecord[];
+  if (mode === 'tracked') records = sat.trackedRecords;
+  else {
+    const selected = selectSelectedSatellite(sat);
+    records = selected ? [selected] : [];
+  }
   const observer = useObserverStore.getState().location;
   const s = useSettingsStore.getState();
-  const options = {
+  const options: SearchOptions = {
     elevationMaskDeg: s.elevationMaskDeg,
     maxPasses: s.passCount,
     searchDays: s.passSearchDays,
     scanStepS: s.passScanStepS,
   };
-  const key = [
-    record.noradId,
-    record.tle.line1,
-    record.tle.line2,
+  const shared = [
     observer.latitudeDeg,
     observer.longitudeDeg,
     observer.altitudeM,
@@ -87,134 +113,243 @@ function readInputs(): Inputs | null {
     options.searchDays,
     options.scanStepS,
   ].join('|');
-  return {
-    key,
-    request: { noradId: record.noradId, line1: record.tle.line1, line2: record.tle.line2, observer, options },
-  };
+  const jobs = records.map((r) => ({
+    key: `${r.noradId}|${r.tle.line1}|${r.tle.line2}|${shared}`,
+    noradId: r.noradId,
+    line1: r.tle.line1,
+    line2: r.tle.line2,
+  }));
+  return { mode, jobs, observer, options };
 }
 
-let worker: Worker | null = null;
+interface Slot {
+  worker: Worker | null;
+  job: { id: number; key: string } | null;
+}
+
 let workerUnavailable = false;
 let seq = 0;
-let inflight: { id: number; key: string } | null = null;
-let currentKey: string | null = null;
-let lastPasses: Pass[] = [];
+let slots: Slot[] = [];
+/** Latest result per job key, for the current inputs only. */
+const cache = new Map<string, PassSearchResult>();
+/** Failed searches per job key; retried only when the inputs change. */
+const failed = new Map<string, string>();
+/** Last passes received per satellite, kept across input changes so a selected pass can be followed. */
+const lastPasses = new Map<number, Pass[]>();
+let lastComputeMs: number | null = null;
+/** Bumped on every change publish() must reflect (results, failures, in-flight set). */
+let version = 0;
+let publishedSignature: string | null = null;
+let searchCount = 0;
 
-function getWorker(): Worker | null {
+/** Searches started since the scheduler was loaded. For tests and diagnostics. */
+export function passSearchCount(): number {
+  return searchCount;
+}
+
+function poolSize(mode: PassScheduleMode): number {
+  if (mode === 'selected' || workerUnavailable || typeof Worker === 'undefined') return 1;
+  const cores = typeof navigator !== 'undefined' && navigator.hardwareConcurrency ? navigator.hardwareConcurrency : 2;
+  return Math.max(1, Math.min(MAX_WORKERS, cores - 1));
+}
+
+function createWorker(slot: Slot): Worker | null {
   if (workerUnavailable || typeof Worker === 'undefined') return null;
-  if (worker) return worker;
   try {
-    worker = new Worker(new URL('../workers/pass-prediction.worker.ts', import.meta.url), { type: 'module' });
-    worker.onmessage = (e: MessageEvent<PassSearchResponse>) => handleResponse(e.data);
-    worker.onerror = (e) => {
+    const w = new Worker(new URL('../workers/pass-prediction.worker.ts', import.meta.url), { type: 'module' });
+    w.onmessage = (e: MessageEvent<PassSearchResponse>) => handleResponse(slot, e.data);
+    w.onerror = (e) => {
       console.error('[passes] worker failed; falling back to the main thread', e.message);
-      worker?.terminate();
-      worker = null;
       workerUnavailable = true;
       // Re-run whatever was in flight on the main thread.
-      inflight = null;
-      currentKey = null;
+      stopAll();
       evaluate();
     };
+    return w;
   } catch (err) {
     console.warn('[passes] Web Worker unavailable; computing on the main thread', err);
     workerUnavailable = true;
-    worker = null;
+    return null;
   }
-  return worker;
 }
 
-function start(inputs: Inputs, nowMs: number, newInputs: boolean): void {
-  // Abandon a search for outdated inputs rather than queueing behind it.
-  if (inflight && worker) {
-    worker.terminate();
-    worker = null;
-  }
+function stopSlot(slot: Slot): void {
+  slot.worker?.terminate();
+  slot.worker = null;
+  slot.job = null;
+}
+
+function stopAll(): void {
+  slots.forEach(stopSlot);
+  slots = [];
+  version++;
+}
+
+function isInflight(key: string): boolean {
+  return slots.some((s) => s.job?.key === key);
+}
+
+function dispatch(slot: Slot, job: Job, inputs: Inputs, nowMs: number): void {
   const id = ++seq;
-  inflight = { id, key: inputs.key };
-  currentKey = inputs.key;
+  slot.job = { id, key: job.key };
+  searchCount++;
+  version++;
   const request: PassSearchRequest = {
-    ...inputs.request,
     id,
-    options: { ...inputs.request.options, startMs: nowMs },
+    noradId: job.noradId,
+    line1: job.line1,
+    line2: job.line2,
+    observer: inputs.observer,
+    options: { ...inputs.options, startMs: nowMs },
   };
-  if (newInputs) {
-    usePassStore.setState({
-      state: 'computing',
-      noradId: request.noradId,
-      result: null,
-      passes: [],
-      refreshing: false,
-      error: null,
-    });
-  } else {
-    usePassStore.setState({ refreshing: true });
-  }
-  const w = getWorker();
-  if (w) w.postMessage(request);
-  else setTimeout(() => handleResponse(runPassSearch(request)), 0);
+  slot.worker ??= createWorker(slot);
+  if (slot.worker) slot.worker.postMessage(request);
+  else setTimeout(() => handleResponse(slot, runPassSearch(request)), 0);
 }
 
-function handleResponse(res: PassSearchResponse): void {
-  if (!inflight || res.id !== inflight.id) return; // superseded
-  inflight = null;
+function handleResponse(slot: Slot, res: PassSearchResponse): void {
+  const job = slot.job;
+  if (!job || res.id !== job.id) return; // superseded
+  slot.job = null;
+  version++;
   if (!res.ok) {
     console.error('[passes] search failed', res.error);
-    usePassStore.setState({ state: 'error', error: res.error, refreshing: false, result: null, passes: [] });
-    return;
+    failed.set(job.key, res.error);
+  } else {
+    const { result, computeMs } = res;
+    console.debug(
+      `[passes] NORAD ${result.noradId}: ${result.passes.length} pass(es), status ${result.status}, ` +
+        `${result.evaluations} evaluations in ${computeMs.toFixed(0)} ms`,
+    );
+    if (result.propagationFailures > 0) {
+      console.warn(`[passes] NORAD ${result.noradId}: ${result.propagationFailures} SGP4 failures during the scan`);
+    }
+    cache.set(job.key, result);
+    lastComputeMs = computeMs;
+    reconcileSelection(lastPasses.get(result.noradId) ?? [], result);
+    lastPasses.set(result.noradId, result.passes);
   }
-  const { result, computeMs } = res;
-  console.debug(
-    `[passes] NORAD ${result.noradId}: ${result.passes.length} pass(es), status ${result.status}, ` +
-      `${result.evaluations} evaluations in ${computeMs.toFixed(0)} ms`,
-  );
-  if (result.propagationFailures > 0) {
-    console.warn(`[passes] NORAD ${result.noradId}: ${result.propagationFailures} SGP4 failures during the scan`);
-  }
-  usePassStore.setState({
-    state: 'ready',
-    noradId: result.noradId,
-    result,
-    passes: result.passes,
-    refreshing: false,
-    error: null,
-    computeMs,
-  });
-  reconcileSelection(result.passes);
-  lastPasses = result.passes;
+  evaluate();
 }
 
-/** Keeps the selected pass selected across recomputes, or clears a pass that no longer exists. */
-function reconcileSelection(passes: Pass[]): void {
+/**
+ * Keeps the selected pass selected across a recompute of its satellite, or
+ * clears a pass that no longer exists.
+ */
+function reconcileSelection(previous: readonly Pass[], next: PassSearchResult): void {
   const sat = useSatelliteStore.getState();
   const id = sat.selectedPassId;
-  if (id === null || passes.some((p) => p.id === id)) return;
-  const previous = lastPasses.find((p) => p.id === id);
-  const match = previous ? matchPass(previous, passes) : null;
+  if (id === null || sat.selectedId !== next.noradId || next.passes.some((p) => p.id === id)) return;
+  const old = previous.find((p) => p.id === id);
+  const match = old ? matchPass(old, next.passes) : null;
   sat.selectPass(match ? match.id : null);
 }
 
-/** Checks inputs and simulation time; starts a search when needed. */
+function publish(inputs: Inputs): void {
+  const signature = `${inputs.mode}#${version}#${inputs.jobs.map((j) => j.key).join(',')}`;
+  if (signature === publishedSignature) return;
+  publishedSignature = signature;
+
+  const results = new Map<number, PassSearchResult>();
+  const failures = new Map<number, string>();
+  let pendingCount = 0;
+  let refreshing = false;
+  for (const job of inputs.jobs) {
+    const r = cache.get(job.key);
+    const err = failed.get(job.key);
+    if (r) {
+      results.set(job.noradId, r);
+      if (isInflight(job.key)) refreshing = true;
+    } else if (err !== undefined) failures.set(job.noradId, err);
+    else pendingCount++;
+  }
+  const totalCount = inputs.jobs.length;
+  const firstError = failures.values().next().value ?? null;
+
+  if (totalCount === 0) {
+    usePassStore.setState({ ...INITIAL_PASS_STATE, mode: inputs.mode });
+    return;
+  }
+  if (inputs.mode === 'selected') {
+    const job = inputs.jobs[0]!;
+    const result = results.get(job.noradId) ?? null;
+    usePassStore.setState({
+      mode: 'selected',
+      state: firstError !== null ? 'error' : result ? 'ready' : 'computing',
+      noradId: job.noradId,
+      result,
+      results,
+      passes: result?.passes ?? [],
+      horizonMs: null,
+      pendingCount,
+      totalCount,
+      refreshing,
+      error: firstError,
+      failures,
+      computeMs: lastComputeMs,
+    });
+    return;
+  }
+  const merged = mergePassSchedule(results.values());
+  usePassStore.setState({
+    mode: 'tracked',
+    state: failures.size === totalCount ? 'error' : results.size === 0 ? 'computing' : 'ready',
+    noradId: null,
+    result: null,
+    results,
+    passes: merged.passes,
+    horizonMs: merged.horizonMs,
+    pendingCount,
+    totalCount,
+    refreshing,
+    error: firstError,
+    failures,
+    computeMs: lastComputeMs,
+  });
+}
+
+/** Checks inputs and simulation time; starts searches when needed. */
 function evaluate(): void {
   const inputs = readInputs();
-  if (!inputs) {
-    if (currentKey !== null || inflight) {
-      inflight = null;
-      currentKey = null;
-      lastPasses = [];
-      usePassStore.setState({ ...INITIAL_PASS_STATE });
+  const keys = new Set(inputs.jobs.map((j) => j.key));
+
+  // Forget results and abandon searches for inputs that are no longer current.
+  for (const k of [...cache.keys()]) if (!keys.has(k)) cache.delete(k);
+  for (const k of [...failed.keys()]) if (!keys.has(k)) failed.delete(k);
+  for (const slot of slots) {
+    if (slot.job && !keys.has(slot.job.key)) {
+      stopSlot(slot);
+      version++;
     }
-    return;
   }
+
+  const size = poolSize(inputs.mode);
+  while (slots.length < size) slots.push({ worker: null, job: null });
+  // Shrink an idle pool (e.g. back to one worker in selected mode).
+  for (let i = slots.length - 1; i >= size; i--) {
+    if (slots[i]!.job === null) {
+      stopSlot(slots[i]!);
+      slots.splice(i, 1);
+    }
+  }
+
   const nowMs = getSimTimeMs();
-  if (inputs.key !== currentKey) {
-    start(inputs, nowMs, true);
-    return;
+  const { maxPasses } = inputs.options;
+  // Satellites with no result first, then stale ones.
+  const missing: Job[] = [];
+  const stale: Job[] = [];
+  for (const job of inputs.jobs) {
+    if (isInflight(job.key) || failed.has(job.key)) continue;
+    const r = cache.get(job.key);
+    if (!r) missing.push(job);
+    else if (needsRecompute(r, nowMs, maxPasses)) stale.push(job);
   }
-  if (inflight) return;
-  const { result, state } = usePassStore.getState();
-  if (state === 'error') return; // retried when inputs change
-  if (result && needsRecompute(result, nowMs, inputs.request.options.maxPasses)) start(inputs, nowMs, false);
+  const queue = [...missing, ...stale];
+  for (const slot of slots) {
+    if (queue.length === 0) break;
+    if (slot.job === null) dispatch(slot, queue.shift()!, inputs, nowMs);
+  }
+  publish(inputs);
 }
 
 let refs = 0;
@@ -222,7 +357,7 @@ let teardown: (() => void) | null = null;
 
 /**
  * Starts the scheduler (reference counted). Returns a release function. The
- * scheduler stops, and its worker is terminated, when the last holder releases.
+ * scheduler stops, and its workers are terminated, when the last holder releases.
  */
 export function retainPassScheduler(): () => void {
   if (refs++ === 0) {
@@ -237,11 +372,12 @@ export function retainPassScheduler(): () => void {
     teardown = () => {
       unsubs.forEach((u) => u());
       clearInterval(timer);
-      worker?.terminate();
-      worker = null;
-      inflight = null;
-      currentKey = null;
-      lastPasses = [];
+      stopAll();
+      cache.clear();
+      failed.clear();
+      lastPasses.clear();
+      publishedSignature = null;
+      usePassStore.setState({ ...INITIAL_PASS_STATE });
     };
   }
   let released = false;

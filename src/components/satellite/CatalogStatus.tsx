@@ -10,7 +10,7 @@ import { formatDuration, formatLocal, formatUtc } from '../../utils/format';
  */
 export function CatalogStatus() {
   const loadState = useSatelliteStore((s) => s.loadState);
-  const trackedCount = useSatelliteStore((s) => s.tracked.length);
+  const activeCount = useSatelliteStore((s) => s.active.length);
   const groupStatus = useSatelliteStore((s) => s.groupStatus);
   const loadCatalog = useSatelliteStore((s) => s.loadCatalog);
   const health = useCatalogHealth();
@@ -40,7 +40,7 @@ export function CatalogStatus() {
   return (
     <div className="flex items-center gap-2 font-mono text-[11px] text-muted tabular" title={details} data-testid="catalog-status">
       <Database className="size-3.5" aria-hidden />
-      <span>{trackedCount.toLocaleString()} objects</span>
+      <span>{activeCount.toLocaleString()} objects</span>
       {health.dataAgeMs !== null && (
         <span className="hidden text-faint md:inline">· updated {formatDuration(health.dataAgeMs)} ago</span>
       )}

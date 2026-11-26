@@ -53,7 +53,7 @@ export interface CachedTleText {
 
 export interface CatalogLoadOptions {
   groups: readonly CatalogGroupId[];
-  /** Individually tracked objects outside the enabled groups. */
+  /** Objects added individually by NORAD id, outside the enabled groups. */
   extraNoradIds?: readonly number[];
   /** Cached data younger than this is used without downloading, ms. */
   maxAgeMs: number;

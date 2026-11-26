@@ -9,7 +9,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { PERSIST_KEYS, safeLocalStorage } from '../../services/storage';
 import { DEFAULT_OBSERVER, useObserverStore } from '../../stores/observer-store';
-import { DEFAULT_CATEGORY_FILTER, useSatelliteStore } from '../../stores/satellite-store';
+import { DEFAULT_CATEGORY_FILTER, migrateSatellitePersist, useSatelliteStore } from '../../stores/satellite-store';
 import { DEFAULT_SETTINGS, sanitizeSettings, useSettingsStore, type Settings } from '../../stores/settings-store';
 
 const storage = safeLocalStorage();
@@ -105,25 +105,25 @@ describe('observer persistence', () => {
   });
 });
 
-describe('tracked selection persistence', () => {
+describe('catalog selection persistence', () => {
   it('restores enabled groups, removed objects, added NORAD ids, filters and the selection', async () => {
     useSatelliteStore.setState({
       enabledGroups: ['stations', 'starlink'],
-      untrackedIds: [48274],
+      removedIds: [48274],
       extraNoradIds: [5],
       categoryFilter: { ...DEFAULT_CATEGORY_FILTER, starlink: false },
       selectedId: 25544,
     });
     await reload(PERSIST_KEYS.satellites, useSatelliteStore, {
       enabledGroups: [],
-      untrackedIds: [],
+      removedIds: [],
       extraNoradIds: [],
       categoryFilter: { ...DEFAULT_CATEGORY_FILTER },
       selectedId: null,
     });
     const s = useSatelliteStore.getState();
     expect(s.enabledGroups).toEqual(['stations', 'starlink']);
-    expect(s.untrackedIds).toEqual([48274]);
+    expect(s.removedIds).toEqual([48274]);
     expect(s.extraNoradIds).toEqual([5]);
     expect(s.categoryFilter.starlink).toBe(false);
     expect(s.categoryFilter.iss).toBe(true);
@@ -132,9 +132,50 @@ describe('tracked selection persistence', () => {
     expect(stored(PERSIST_KEYS.satellites).state).not.toHaveProperty('satellites');
   });
 
-  it('restoreUntracked brings removed objects back', () => {
-    useSatelliteStore.setState({ untrackedIds: [1, 2, 3] });
-    useSatelliteStore.getState().restoreUntracked();
-    expect(useSatelliteStore.getState().untrackedIds).toEqual([]);
+  it('restoreRemoved brings removed objects back', () => {
+    useSatelliteStore.setState({ removedIds: [1, 2, 3] });
+    useSatelliteStore.getState().restoreRemoved();
+    expect(useSatelliteStore.getState().removedIds).toEqual([]);
+  });
+});
+
+describe('Tracked list persistence', () => {
+  it('restores the Tracked list, its order and the Tracked-only filter after a reload', async () => {
+    useSatelliteStore.setState({ trackedIds: [43013, 25544, 33591], trackedOnly: true });
+    expect(stored(PERSIST_KEYS.satellites).state.trackedIds).toEqual([43013, 25544, 33591]);
+    await reload(PERSIST_KEYS.satellites, useSatelliteStore, { trackedIds: [], trackedOnly: false });
+    const s = useSatelliteStore.getState();
+    expect(s.trackedIds).toEqual([43013, 25544, 33591]);
+    expect(s.trackedOnly).toBe(true);
+    useSatelliteStore.setState({ trackedIds: [], trackedOnly: false });
+  });
+
+  it('drops invalid stored ids and keeps defaults for corrupted fields', async () => {
+    storage.setItem(
+      PERSIST_KEYS.satellites,
+      JSON.stringify({ version: 2, state: { trackedIds: [25544, -1, 'x', 2.5], trackedOnly: 'yes', removedIds: null } }),
+    );
+    await useSatelliteStore.persist.rehydrate();
+    const s = useSatelliteStore.getState();
+    expect(s.trackedIds).toEqual([25544]);
+    expect(s.trackedOnly).toBe(false);
+    expect(s.removedIds).toEqual([]);
+    useSatelliteStore.setState({ trackedIds: [] });
+  });
+
+  it('migrates version 1, where removed objects were called untracked', async () => {
+    expect(migrateSatellitePersist({ untrackedIds: [7], extraNoradIds: [5] }, 1)).toEqual({
+      removedIds: [7],
+      extraNoradIds: [5],
+      trackedIds: [],
+      trackedOnly: false,
+    });
+    storage.setItem(PERSIST_KEYS.satellites, JSON.stringify({ version: 1, state: { untrackedIds: [48274], selectedId: 25544 } }));
+    await useSatelliteStore.persist.rehydrate();
+    const s = useSatelliteStore.getState();
+    expect(s.removedIds).toEqual([48274]);
+    expect(s.trackedIds).toEqual([]);
+    expect(s).not.toHaveProperty('untrackedIds');
+    useSatelliteStore.setState({ removedIds: [] });
   });
 });

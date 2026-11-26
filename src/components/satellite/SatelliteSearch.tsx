@@ -5,20 +5,22 @@ import { CATEGORY_LABELS, type SatelliteRecord } from '../../types/satellite';
 import { CATEGORY_COLORS } from '../../utils/category-colors';
 import { parseNoradQuery, searchSatellites } from '../../utils/satellite-search';
 import { useGlobeViewStore } from '../globe/globe-view-store';
+import { TrackButton } from './TrackButton';
 
 /**
  * Header search: find objects by name, NORAD catalog number or international
- * designator in the loaded catalog, select them, and add or remove them from
- * the tracked list. A NORAD number that is not in any enabled group can be
- * downloaded individually from CelesTrak (`trackNoradId`). Press "/" to focus.
+ * designator in the loaded catalog, select them, add them to or remove them
+ * from the Tracked list (star), or remove them from the catalog. A NORAD
+ * number that is not in any enabled group can be downloaded individually
+ * from CelesTrak (`addNoradId`). Press "/" to focus.
  */
 export function SatelliteSearch() {
   const satellites = useSatelliteStore((s) => s.satellites);
-  const untrackedIds = useSatelliteStore((s) => s.untrackedIds);
+  const removedIds = useSatelliteStore((s) => s.removedIds);
   const extraStatus = useSatelliteStore((s) => s.extraStatus);
   const byId = useSatelliteStore((s) => s.byId);
   const loadState = useSatelliteStore((s) => s.loadState);
-  const { select, trackNoradId, untrack, setCategoryVisible } = useSatelliteStore.getState();
+  const { select, addNoradId, removeObject, setCategoryVisible } = useSatelliteStore.getState();
 
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
@@ -28,7 +30,7 @@ export function SatelliteSearch() {
   const root = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
 
-  const untracked = useMemo(() => new Set(untrackedIds), [untrackedIds]);
+  const removed = useMemo(() => new Set(removedIds), [removedIds]);
   const hits = useMemo(() => searchSatellites(satellites, query, 40), [satellites, query]);
   const queryId = parseNoradQuery(query);
   const offerDownload = queryId !== null && !byId.has(queryId);
@@ -62,10 +64,10 @@ export function SatelliteSearch() {
     };
   }, []);
 
-  /** Select an object (re-tracking it and un-hiding its category if needed) and turn the globe to it. */
+  /** Select an object (restoring it and un-hiding its category if needed) and turn the globe to it. */
   function activate(record: SatelliteRecord) {
     const s = useSatelliteStore.getState();
-    if (s.untrackedIds.includes(record.noradId)) trackNoradId(record.noradId);
+    if (s.removedIds.includes(record.noradId)) addNoradId(record.noradId);
     if (!s.categoryFilter[record.category]) setCategoryVisible(record.category, true);
     select(record.noradId);
     useGlobeViewStore.getState().requestFocus('selected');
@@ -74,7 +76,7 @@ export function SatelliteSearch() {
   }
 
   function download(id: number) {
-    trackNoradId(id);
+    addNoradId(id);
     setPendingId(id);
   }
 
@@ -160,10 +162,10 @@ export function SatelliteSearch() {
                 key={hit.record.noradId}
                 record={hit.record}
                 active={i === active}
-                tracked={!untracked.has(hit.record.noradId)}
+                inCatalog={!removed.has(hit.record.noradId)}
                 onHover={() => setActive(i)}
                 onActivate={() => activate(hit.record)}
-                onToggleTracked={() => (untracked.has(hit.record.noradId) ? trackNoradId(hit.record.noradId) : untrack(hit.record.noradId))}
+                onToggleCatalog={() => (removed.has(hit.record.noradId) ? addNoradId(hit.record.noradId) : removeObject(hit.record.noradId))}
               />
             ))}
           {open && offerDownload && queryId !== null && (
@@ -176,7 +178,7 @@ export function SatelliteSearch() {
               className={`flex w-full items-center gap-2 px-2 py-1.5 text-left font-mono text-[12px] ${active === hits.length ? 'bg-line' : ''}`}
             >
               <CloudDownload className="size-3.5 text-accent" />
-              Download and track NORAD {queryId}
+              Download NORAD {queryId}
               <span className="ml-auto text-[10px] text-faint">not in loaded groups</span>
             </button>
           )}
@@ -194,59 +196,61 @@ export function SatelliteSearch() {
 function ResultRow({
   record,
   active,
-  tracked,
+  inCatalog,
   onHover,
   onActivate,
-  onToggleTracked,
+  onToggleCatalog,
 }: {
   record: SatelliteRecord;
   active: boolean;
-  tracked: boolean;
+  inCatalog: boolean;
   onHover: () => void;
   onActivate: () => void;
-  onToggleTracked: () => void;
+  onToggleCatalog: () => void;
 }) {
   return (
     <div
       role="option"
       aria-selected={active}
       onMouseEnter={onHover}
-      className={`flex cursor-pointer items-center gap-2 px-2 py-1 ${active ? 'bg-line' : ''} ${tracked ? '' : 'opacity-60'}`}
+      className={`flex cursor-pointer items-center gap-2 px-2 py-1 ${active ? 'bg-line' : ''} ${inCatalog ? '' : 'opacity-60'}`}
       onClick={onActivate}
     >
       <span className="inline-block size-2 shrink-0" style={{ background: CATEGORY_COLORS[record.category] }} />
       <span className="min-w-0 flex-1 truncate font-mono text-[12px]">{record.name}</span>
       <span className="font-mono text-[11px] text-muted tabular">{record.noradId}</span>
       <span className="hidden w-24 truncate text-[10px] text-faint sm:inline">{CATEGORY_LABELS[record.category]}</span>
+      <TrackButton noradId={record.noradId} name={record.name} />
       <button
         type="button"
         onClick={(e) => {
           e.stopPropagation();
-          onToggleTracked();
+          onToggleCatalog();
         }}
-        title={tracked ? 'Remove from tracked objects' : 'Track this object'}
-        aria-label={tracked ? `Untrack ${record.name}` : `Track ${record.name}`}
+        title={inCatalog ? 'Remove from the catalog (hidden everywhere)' : 'Restore to the catalog'}
+        aria-label={inCatalog ? `Remove ${record.name} from the catalog` : `Restore ${record.name} to the catalog`}
         className="flex items-center gap-1 border border-line px-1 py-0.5 text-[10px] text-muted hover:border-line-strong hover:text-ink"
       >
-        {tracked ? <EyeOff className="size-3" /> : <Eye className="size-3" />}
-        {tracked ? 'Untrack' : 'Track'}
+        {inCatalog ? <EyeOff className="size-3" /> : <Eye className="size-3" />}
+        {inCatalog ? 'Remove' : 'Restore'}
       </button>
     </div>
   );
 }
 
-/** Shown on an empty query: objects added by number and objects removed from tracking. */
+/** Shown on an empty query: the Tracked list, objects added by number and objects removed from the catalog. */
 function TrackedListManager() {
   const byId = useSatelliteStore((s) => s.byId);
   const extraNoradIds = useSatelliteStore((s) => s.extraNoradIds);
-  const untrackedIds = useSatelliteStore((s) => s.untrackedIds);
-  const { trackNoradId, untrack } = useSatelliteStore.getState();
-  const removed = untrackedIds.filter((id) => byId.has(id));
+  const removedIds = useSatelliteStore((s) => s.removedIds);
+  const trackedIds = useSatelliteStore((s) => s.trackedIds);
+  const { addNoradId, removeObject, removeTracked } = useSatelliteStore.getState();
+  const removed = removedIds.filter((id) => byId.has(id));
 
-  if (extraNoradIds.length === 0 && removed.length === 0) {
+  if (extraNoradIds.length === 0 && removed.length === 0 && trackedIds.length === 0) {
     return <p className="px-2 py-2 text-[12px] text-muted">Type a satellite name (e.g. ISS, NOAA 19), a NORAD number or a designator.</p>;
   }
-  const row = (id: number, action: 'untrack' | 'track') => {
+  const row = (id: number, action: 'remove' | 'restore' | 'untrack') => {
     const r = byId.get(id);
     return (
       <li key={id} className="flex items-center gap-2 px-2 py-1">
@@ -255,26 +259,32 @@ function TrackedListManager() {
         <span className="font-mono text-[11px] text-muted tabular">{id}</span>
         <button
           type="button"
-          onClick={() => (action === 'track' ? trackNoradId(id) : untrack(id))}
+          onClick={() => (action === 'restore' ? addNoradId(id) : action === 'untrack' ? removeTracked(id) : removeObject(id))}
           className="border border-line px-1 py-0.5 text-[10px] text-muted hover:border-line-strong hover:text-ink"
         >
-          {action === 'track' ? 'Restore' : 'Remove'}
+          {action === 'restore' ? 'Restore' : action === 'untrack' ? 'Untrack' : 'Remove'}
         </button>
       </li>
     );
   };
   return (
     <div className="py-1">
+      {trackedIds.length > 0 && (
+        <>
+          <h4 className="px-2 pt-1 text-[10px] uppercase tracking-[0.12em] text-faint">Tracked list</h4>
+          <ul>{trackedIds.map((id) => row(id, 'untrack'))}</ul>
+        </>
+      )}
       {extraNoradIds.length > 0 && (
         <>
           <h4 className="px-2 pt-1 text-[10px] uppercase tracking-[0.12em] text-faint">Added by NORAD ID</h4>
-          <ul>{extraNoradIds.map((id) => row(id, 'untrack'))}</ul>
+          <ul>{extraNoradIds.map((id) => row(id, 'remove'))}</ul>
         </>
       )}
       {removed.length > 0 && (
         <>
-          <h4 className="px-2 pt-1 text-[10px] uppercase tracking-[0.12em] text-faint">Removed from tracking</h4>
-          <ul>{removed.map((id) => row(id, 'track'))}</ul>
+          <h4 className="px-2 pt-1 text-[10px] uppercase tracking-[0.12em] text-faint">Removed from the catalog</h4>
+          <ul>{removed.map((id) => row(id, 'restore'))}</ul>
         </>
       )}
     </div>

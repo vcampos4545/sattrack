@@ -3,6 +3,7 @@ import { useSelectedSatellite } from '../../hooks/use-selected-satellite';
 import { CATEGORY_LABELS } from '../../types/satellite';
 import { CATEGORY_COLORS } from '../../utils/category-colors';
 import { formatLatitude, formatLongitude, formatNumber, formatUtc } from '../../utils/format';
+import { TrackButton } from './TrackButton';
 
 const FRESHNESS_CLASS = { fresh: 'text-ok', aging: 'text-warn', stale: 'text-danger' } as const;
 
@@ -58,7 +59,10 @@ export function SatelliteInfo() {
           <span className="inline-block size-2" style={{ background: CATEGORY_COLORS[record.category] }} />
           {CATEGORY_LABELS[record.category]}
         </div>
-        <div className="truncate font-mono text-[14px] font-medium">{record.name}</div>
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate font-mono text-[14px] font-medium">{record.name}</span>
+          <TrackButton noradId={record.noradId} name={record.name} />
+        </div>
       </div>
       <Field label="NORAD ID" value={String(record.noradId)} />
       <Field label="Altitude" value={state ? `${formatNumber(state.geodetic.altitudeKm, 1)} km` : 'n/a'} />

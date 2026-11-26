@@ -5,20 +5,20 @@ import { CATEGORY_COLORS } from '../../utils/category-colors';
 
 /**
  * Category legend and filter. Each chip shows the category color and how
- * many tracked objects it has; clicking toggles whether that category is
- * drawn and propagated (`setCategoryVisible`). Categories with no tracked
+ * many catalog objects it has; clicking toggles whether that category is
+ * drawn and propagated (`setCategoryVisible`). Categories with no catalog
  * objects are left out.
  */
 export function SatelliteFilters() {
-  const tracked = useSatelliteStore((s) => s.tracked);
+  const active = useSatelliteStore((s) => s.active);
   const filter = useSatelliteStore((s) => s.categoryFilter);
   const setCategoryVisible = useSatelliteStore((s) => s.setCategoryVisible);
 
   const counts = useMemo(() => {
     const m = new Map<SatelliteCategory, number>();
-    for (const r of tracked) m.set(r.category, (m.get(r.category) ?? 0) + 1);
+    for (const r of active) m.set(r.category, (m.get(r.category) ?? 0) + 1);
     return m;
-  }, [tracked]);
+  }, [active]);
 
   const present = CATEGORY_PRIORITY.filter((c) => counts.has(c));
   if (present.length === 0) return null;

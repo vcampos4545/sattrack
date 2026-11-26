@@ -93,10 +93,12 @@ export function useSkyPlotData({ record, observer, timeMs }: SkyPlotInputs): Sky
     [satrec, observer, timeMs],
   );
 
-  // Only trust store passes computed for this object.
-  const forThis = record !== null && passStore.noradId === record.noradId;
-  const passes = forThis ? passStore.passes : null;
-  const result = forThis ? passStore.result : null;
+  // Only trust store passes computed for this object. In Tracked-only mode
+  // the store holds one result per Tracked-list satellite.
+  const result = record ? (passStore.results.get(record.noradId) ?? null) : null;
+  const passes = result?.passes ?? null;
+  // Tracked-only mode with an object that is not on the list: no prediction is coming.
+  const expectResult = passStore.mode === 'selected' || passStore.pendingCount > 0;
 
   return useMemo(() => {
     if (!record) return EMPTY;
@@ -119,7 +121,7 @@ export function useSkyPlotData({ record, observer, timeMs }: SkyPlotInputs): Sky
 
     let passStatus: SkyPlotData['passStatus'] = null;
     if (!focus) {
-      if (!result) passStatus = 'computing';
+      if (!result) passStatus = expectResult ? 'computing' : null;
       else if (result.status !== 'ok') passStatus = result.status;
     }
     return {
@@ -132,5 +134,5 @@ export function useSkyPlotData({ record, observer, timeMs }: SkyPlotInputs): Sky
       windowEndMs: result?.windowEndMs ?? 0,
       error: null,
     };
-  }, [record, satrec, current, liveTrack, timeMs, selectedPass, passes, result]);
+  }, [record, satrec, current, liveTrack, timeMs, selectedPass, passes, result, expectResult]);
 }

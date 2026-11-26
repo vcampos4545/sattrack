@@ -102,7 +102,7 @@ function Check({ id, checked, onChange }: { id: string; checked: boolean; onChan
 
 /**
  * Settings drawer: every persisted setting in one place, grouped by what it
- * affects, plus catalog groups, data refresh and tracked-list maintenance.
+ * affects, plus catalog groups, data refresh and added or removed catalog objects.
  * The same values are also editable inline on the panels that use them; both
  * write to the settings store, so they always agree.
  */
@@ -196,7 +196,7 @@ export function SettingsMenu({ onClose }: { onClose: () => void }) {
       </Section>
 
       <DataSection autoRefreshHours={s.autoRefreshHours} onAutoRefresh={(h) => update({ autoRefreshHours: h })} />
-      <TrackedSection />
+      <CatalogObjectsSection />
 
       <div className="flex items-center gap-2 border-t border-line px-3 py-2.5">
         <p className="text-[11px] text-faint">Settings are saved in this browser.</p>
@@ -289,19 +289,19 @@ function DataSection({ autoRefreshHours, onAutoRefresh }: { autoRefreshHours: nu
   );
 }
 
-function TrackedSection() {
-  const untrackedCount = useSatelliteStore((s) => s.untrackedIds.length);
+function CatalogObjectsSection() {
+  const removedCount = useSatelliteStore((s) => s.removedIds.length);
   const extraNoradIds = useSatelliteStore((s) => s.extraNoradIds);
   const extraStatus = useSatelliteStore((s) => s.extraStatus);
   const byId = useSatelliteStore((s) => s.byId);
-  const restoreUntracked = useSatelliteStore((s) => s.restoreUntracked);
-  const untrack = useSatelliteStore((s) => s.untrack);
-  if (untrackedCount === 0 && extraNoradIds.length === 0) return null;
+  const restoreRemoved = useSatelliteStore((s) => s.restoreRemoved);
+  const removeObject = useSatelliteStore((s) => s.removeObject);
+  if (removedCount === 0 && extraNoradIds.length === 0) return null;
   return (
-    <Section title="Tracked list">
-      {untrackedCount > 0 && (
-        <Row label={`${untrackedCount} object${untrackedCount === 1 ? '' : 's'} removed from groups`}>
-          <button type="button" onClick={restoreUntracked} className="border border-line-strong px-2 py-0.5 font-mono text-[11px] hover:border-accent">
+    <Section title="Catalog objects">
+      {removedCount > 0 && (
+        <Row label={`${removedCount} object${removedCount === 1 ? '' : 's'} removed from groups`}>
+          <button type="button" onClick={restoreRemoved} className="border border-line-strong px-2 py-0.5 font-mono text-[11px] hover:border-accent">
             Restore all
           </button>
         </Row>
@@ -311,7 +311,7 @@ function TrackedSection() {
         return (
           <Row key={id} label={`${byId.get(id)?.name ?? 'NORAD'} · ${id}`} hint={err ?? 'Added individually by NORAD id'}>
             {err && <span className="font-mono text-[11px] text-warn">error</span>}
-            <button type="button" onClick={() => untrack(id)} aria-label={`Remove ${id}`} className="text-muted hover:text-ink">
+            <button type="button" onClick={() => removeObject(id)} aria-label={`Remove ${id}`} className="text-muted hover:text-ink">
               <X className="size-3.5" />
             </button>
           </Row>
