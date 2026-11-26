@@ -7,7 +7,7 @@ observer-relative coordinates. There is no backend, account or API key.
 
 What it does:
 
-- **Primary 3D globe** with every tracked object at its SGP4 position, orbit
+- **Primary 3D globe** with every loaded object at its SGP4 position, orbit
   paths, the observer, a lat/lon grid and the day/night terminator.
 - **Search and catalog** by name, NORAD id or designator; category filters;
   add or remove objects; CelesTrak groups on demand.
@@ -17,6 +17,8 @@ What it does:
   minimum-elevation coverage contour and observer visibility.
 - **Upcoming passes** (AOS, LOS, max elevation, azimuths, direction,
   countdown) from a real scan-and-refine search.
+- **Tracked list** of objects you follow, with a "Tracked only" filter that
+  shows just those on the globe and one combined pass schedule sorted by AOS.
 - **Local sky plot** (az/el polar chart) with the live path and pass marks,
   ready for antenna pointing overlays.
 - **Time controls**: pause, step, speed, reverse, jump, back to live. Every
@@ -223,6 +225,18 @@ length. A superseded search is abandoned. A selected pass is followed across
 recomputes by matching its peak time. Without Web Worker support the same job
 runs on the main thread.
 
+**Tracked list schedule.** With "Tracked only" on, the scheduler runs one
+search per Tracked-list satellite on a small worker pool (up to 3 workers) and
+caches each result under its own inputs (TLE, observer, settings). Adding an
+object searches only that object; removing one, selecting, or filtering
+categories searches nothing; a changed observer or setting searches every
+object again. Each result follows the same reuse and recompute rules as above.
+`mergePassSchedule` (`stores/pass-store.ts`) merges the results by AOS. Each
+search stops after `passCount` passes, so a satellite with frequent passes
+covers less time than a rare one; the merged list is cut at the earliest
+`scannedUntilMs` so it never skips a pass, and the panel says through when it
+is complete.
+
 **Validation** (`src/tests/passes/`): AOS/LOS sit on the mask and the maximum
 is a true local maximum. Results match an independent 1 s brute-force scan
 that uses satellite.js's own `eciToEcf` / `ecfToLookAngles` (within 2 s and
@@ -240,6 +254,15 @@ popover (count, window, scan step) write to the settings store. Clicking a row
 calls `selectPass(id)` and opens `PassDetails.tsx`: AOS / max / LOS events with
 local and UTC times, az/el and slant range, min range, range rate, and an
 elevation profile with the current time marked.
+
+With "Tracked only" on, the panel shows the combined schedule of the Tracked
+list instead, sorted by AOS, with a Satellite column and the same columns,
+countdown, in-progress indicator and mask. Objects that never rise or cannot be
+predicted are listed above the table. Clicking a row calls
+`selectSatellitePass(noradId, passId)`, so the sky plot, ground track and
+selected-object strip follow that satellite and pass.
+
+![Combined pass schedule of eight Tracked-list satellites, sorted by AOS, with a Satellite column](docs/screenshots/tracked-schedule.jpg)
 
 ## Ground track and footprint
 
@@ -324,8 +347,17 @@ equirectangular canvas texture with a 15-degree graticule.
 - **Interaction.** Drag to rotate, scroll to zoom, hover for name and NORAD id,
   click to select. Buttons center on the observer or the selection.
 - **Search** (header, press `/`): name, NORAD id or international designator.
-  Rows track/untrack; a NORAD number not in the loaded groups can be
-  downloaded and tracked. Category chips at the bottom of the globe filter.
+  The star on a row adds it to or removes it from the Tracked list; "Remove"
+  drops it from the catalog (and "Restore" brings it back). A NORAD number not
+  in the loaded groups can be downloaded. Category chips at the bottom of the
+  globe filter.
+- **Tracked list.** A user-curated, persisted list of objects to follow. Add
+  from search results or the star on the selected-object strip; the "Tracked"
+  button on the globe toolbar lists them (click to select, star to remove).
+  "Tracked only" (globe toolbar and passes panel) draws only those objects and
+  their orbits, and switches the passes panel to their combined schedule.
+
+![Tracked list on the globe toolbar, with Tracked only on](docs/screenshots/tracked-list.jpg)
 
 ![Globe with ISS selected](docs/globe-selected.png)
 
@@ -344,13 +376,22 @@ which are about real downloads.
 display only (the time bar's offset from real time).
 
 **Catalog and selection.** `stores/satellite-store.ts`:
-- `satellites` (everything loaded), `tracked` (minus user-removed), `visible`
-  (tracked and category filter on), `byId`. These are stable arrays recomputed
-  in actions, so they are safe to subscribe to.
-- `selectedId`, `select(id)`, `selectedPassId`, `selectPass(id)`. Changing the
-  selection clears the pass. Use `selectSelectedSatellite` as the selector.
-- `trackNoradId(id)` (downloads by catalog number if needed), `untrack(id)`,
-  `restoreUntracked()`, `setCategoryVisible`, `setGroupEnabled`, `loadCatalog({ force })`.
+- `satellites` (everything loaded), `active` (minus user-removed,
+  `removedIds`), `trackedRecords` (loaded records of the Tracked list
+  `trackedIds`, in list order), `visible` (active, category filter on, and on
+  the Tracked list when `trackedOnly`), `byId`. These are stable arrays
+  recomputed in actions, so they are safe to subscribe to.
+- Naming: "removed" is the catalog (objects hidden from their groups);
+  "tracked" is only the user's Tracked list. Persisted state before version 2
+  called removed objects `untrackedIds` and is migrated.
+- `selectedId`, `select(id)`, `selectedPassId`, `selectPass(id)`,
+  `selectSatellitePass(id, passId)`. Changing the selection with `select`
+  clears the pass. Use `selectSelectedSatellite` as the selector.
+- Catalog: `addNoradId(id)` (downloads by catalog number if needed, restores a
+  removed object), `removeObject(id)` (also drops it from the Tracked list),
+  `restoreRemoved()`, `setCategoryVisible`, `setGroupEnabled`, `loadCatalog({ force })`.
+- Tracked list: `addTracked(id)` (adds to the catalog too), `removeTracked(id)`,
+  `setTrackedOnly(on)`.
 - Status: `loadState`, `loadError`, `groupStatus`, `lastLoadedAtMs`.
 
 **Observer.** `stores/observer-store.ts`: `location: ObserverLocation`
@@ -383,9 +424,12 @@ rest; `reset()` restores `DEFAULT_SETTINGS`. Persisted.
 **Passes.** `types/passes.ts` defines `Pass` (AOS/LOS/max-elevation times and
 azimuths, duration, `track: PassTrackSample[]`) and its `id`
 (`${noradId}-${aosMs}`), shared by the passes table and the sky plot.
-- `stores/pass-store.ts` holds the predicted passes of the selected satellite:
-  `passes`, `result` (status, search window, diagnostics), `state`
-  (`idle` / `computing` / `ready` / `error`), `refreshing`.
+- `stores/pass-store.ts` holds the predicted passes. `mode` follows
+  `trackedOnly`: `selected` (the selected satellite: `noradId`, `result` with
+  status, search window and diagnostics) or `tracked` (the Tracked list:
+  `passes` merged by AOS up to `horizonMs`, `pendingCount` / `totalCount`,
+  `failures`). Both modes fill `passes`, `results` (latest result per NORAD
+  id), `state` (`idle` / `computing` / `ready` / `error`) and `refreshing`.
 - Read it with `usePassPredictions()` or `useSelectedPass()`
   (`hooks/use-pass-predictions.ts`). Either hook keeps the shared scheduler
   running, so a panel never needs to start it itself.
@@ -516,7 +560,7 @@ The same values can also be changed inline on the panels that use them (the
 mask on the passes panel, the orbit toggles on the globe, the footprint slider
 on the ground track). Both write to `stores/settings-store.ts`, so they never
 disagree. "Reset to defaults" asks for a second click and resets settings
-only, not the location, tracked list or cached data.
+only, not the location, Tracked list or cached data.
 
 What is stored where:
 
@@ -524,7 +568,7 @@ What is stored where:
 |---|---|---|
 | Settings | localStorage | `sattrack.settings.v1` |
 | Observer location | localStorage | `sattrack.observer.v1` |
-| Enabled groups, removed and added objects, category filters, selection | localStorage | `sattrack.satellites.v1` |
+| Enabled groups, removed and added objects, category filters, Tracked list and "Tracked only", selection | localStorage | `sattrack.satellites.v1` |
 | Downloaded TLE text and download time, per group / NORAD id | IndexedDB `sattrack` / `kv` | `tle:group:<id>`, `tle:catnr:<id>` |
 
 Stored values are validated on load: numbers are clamped, wrong types and

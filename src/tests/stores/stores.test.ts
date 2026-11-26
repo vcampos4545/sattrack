@@ -84,20 +84,20 @@ describe('satellite store', () => {
         logger: { info: () => {}, warn: () => {} },
       }),
     );
-    useSatelliteStore.setState({ enabledGroups: ['stations'], extraNoradIds: [], untrackedIds: [], selectedId: null });
+    useSatelliteStore.setState({ enabledGroups: ['stations'], extraNoradIds: [], removedIds: [], trackedIds: [], trackedOnly: false, selectedId: null });
     await useSatelliteStore.getState().loadCatalog();
   });
 
-  it('loads the catalog and derives tracked/visible sets', () => {
+  it('loads the catalog and derives active/visible sets', () => {
     const s = useSatelliteStore.getState();
     expect(s.loadState).toBe('ready');
-    expect(s.tracked.map((x) => x.noradId)).toEqual([25544]);
+    expect(s.active.map((x) => x.noradId)).toEqual([25544]);
     s.setCategoryVisible('iss', false);
     expect(useSatelliteStore.getState().visible).toHaveLength(0);
     s.setCategoryVisible('iss', true);
   });
 
-  it('selects, clears the pass on selection change, and untracks', () => {
+  it('selects, clears the pass on selection change, and removes', () => {
     const s = useSatelliteStore.getState();
     s.select(25544);
     s.selectPass('25544-123');
@@ -105,16 +105,56 @@ describe('satellite store', () => {
     s.select(null);
     expect(useSatelliteStore.getState().selectedPassId).toBeNull();
     s.select(25544);
-    s.untrack(25544);
+    s.removeObject(25544);
     const after = useSatelliteStore.getState();
-    expect(after.tracked).toHaveLength(0);
+    expect(after.active).toHaveLength(0);
     expect(after.selectedId).toBeNull();
   });
 
-  it('downloads objects tracked by NORAD id outside the enabled groups', async () => {
-    useSatelliteStore.getState().trackNoradId(5);
+  it('downloads objects added by NORAD id outside the enabled groups', async () => {
+    useSatelliteStore.getState().addNoradId(5);
     expect(useSatelliteStore.getState().extraNoradIds).toEqual([5]);
     await useSatelliteStore.getState().loadCatalog();
-    expect(useSatelliteStore.getState().tracked.map((x) => x.noradId).sort((a, b) => a - b)).toEqual([5, 25544]);
+    expect(useSatelliteStore.getState().active.map((x) => x.noradId).sort((a, b) => a - b)).toEqual([5, 25544]);
+  });
+
+  it('keeps a Tracked list separate from the catalog and filters the globe to it', async () => {
+    const s = useSatelliteStore.getState();
+    s.addTracked(25544);
+    s.addTracked(25544); // no duplicates
+    expect(useSatelliteStore.getState().trackedIds).toEqual([25544]);
+    expect(useSatelliteStore.getState().trackedRecords.map((r) => r.noradId)).toEqual([25544]);
+
+    // Adding an object that is not loaded downloads it, like addNoradId.
+    s.addTracked(5);
+    expect(useSatelliteStore.getState().extraNoradIds).toEqual([5]);
+    await useSatelliteStore.getState().loadCatalog();
+    expect(useSatelliteStore.getState().trackedRecords.map((r) => r.noradId)).toEqual([25544, 5]);
+
+    s.removeTracked(5);
+    s.setTrackedOnly(true);
+    expect(useSatelliteStore.getState().visible.map((r) => r.noradId)).toEqual([25544]);
+    // The catalog itself is unchanged.
+    expect(useSatelliteStore.getState().active.map((r) => r.noradId).sort((a, b) => a - b)).toEqual([5, 25544]);
+    s.setTrackedOnly(false);
+    expect(useSatelliteStore.getState().visible).toHaveLength(2);
+  });
+
+  it('drops an object from the Tracked list when it is removed from the catalog', () => {
+    const s = useSatelliteStore.getState();
+    s.addTracked(25544);
+    s.removeObject(25544);
+    expect(useSatelliteStore.getState().trackedIds).toEqual([]);
+    // Tracking it again restores it to the catalog.
+    s.addTracked(25544);
+    expect(useSatelliteStore.getState().removedIds).toEqual([]);
+    expect(useSatelliteStore.getState().trackedRecords.map((r) => r.noradId)).toEqual([25544]);
+  });
+
+  it('selects a satellite and its pass together', () => {
+    const s = useSatelliteStore.getState();
+    s.select(null);
+    s.selectSatellitePass(25544, '25544-1');
+    expect(useSatelliteStore.getState()).toMatchObject({ selectedId: 25544, selectedPassId: '25544-1' });
   });
 });

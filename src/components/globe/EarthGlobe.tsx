@@ -141,11 +141,16 @@ function CatalogOverlay() {
   const loadState = useSatelliteStore((s) => s.loadState);
   const loadError = useSatelliteStore((s) => s.loadError);
   const empty = useSatelliteStore((s) => s.satellites.length === 0);
-  if (!empty) return null;
-  const text = loadState === 'error' ? (loadError ?? 'Catalog failed to load') : 'Loading catalog from CelesTrak…';
+  const emptyTrackedOnly = useSatelliteStore((s) => s.trackedOnly && s.trackedRecords.length === 0);
+  if (!empty && !emptyTrackedOnly) return null;
+  const text = !empty
+    ? 'Tracked only is on and the Tracked list is empty. Star objects in search to add them.'
+    : loadState === 'error'
+      ? (loadError ?? 'Catalog failed to load')
+      : 'Loading catalog from CelesTrak…';
   return (
     <div className="pointer-events-none absolute inset-x-0 top-1/2 flex justify-center">
-      <span className={`border border-line bg-panel/90 px-3 py-1.5 font-mono text-[12px] ${loadState === 'error' ? 'text-danger' : 'text-muted'}`}>
+      <span className={`border border-line bg-panel/90 px-3 py-1.5 font-mono text-[12px] ${empty && loadState === 'error' ? 'text-danger' : 'text-muted'}`}>
         {text}
       </span>
     </div>

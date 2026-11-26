@@ -1,6 +1,7 @@
 import { Grid3x3, Orbit, SunMoon } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useSettingsStore, type OrbitScope } from '../../stores/settings-store';
+import { TrackedListButton, TrackedOnlyToggle } from '../satellite/TrackedList';
 
 const LENGTH_CHOICES = [0.25, 0.5, 1, 2, 3, 5];
 
@@ -19,7 +20,7 @@ function Toggle({ on, onClick, icon: Icon, label }: { on: boolean; onClick: () =
   );
 }
 
-/** Globe display settings (persisted in the settings store). */
+/** Globe display settings (persisted in the settings store) and the Tracked-list filter. */
 export function GlobeToolbar() {
   const showOrbits = useSettingsStore((s) => s.showOrbits);
   const orbitScope = useSettingsStore((s) => s.orbitScope);
@@ -33,6 +34,9 @@ export function GlobeToolbar() {
 
   return (
     <div className="flex items-center gap-1.5 font-mono">
+      <TrackedOnlyToggle />
+      <TrackedListButton />
+      <span className="mx-0.5 h-4 w-px bg-line" />
       <Toggle on={showOrbits} onClick={() => update({ showOrbits: !showOrbits })} icon={Orbit} label="Orbits" />
       <select
         aria-label="Which orbits to draw"

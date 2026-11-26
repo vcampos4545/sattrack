@@ -1,16 +1,19 @@
 /**
- * Satellite catalog, tracked set, category filters and selection.
+ * Satellite catalog, Tracked list, filters and selection.
  *
  * Definitions:
  * - catalog (`satellites`): every record loaded from the enabled CelesTrak
  *   groups plus individually added NORAD ids.
- * - tracked (`tracked`): catalog minus objects the user removed.
- * - visible (`visible`): tracked objects whose category filter is on. This is
- *   what the globe should draw and propagate.
+ * - active (`active`): catalog minus objects the user removed (`removedIds`).
+ * - Tracked list (`trackedIds`, records in `trackedRecords`): the objects the
+ *   user curated to follow. Independent of the category filter; persisted.
+ * - visible (`visible`): active objects whose category filter is on and, when
+ *   `trackedOnly` is set, that are on the Tracked list. This is what the globe
+ *   should draw and propagate.
  *
- * `tracked` and `visible` are recomputed inside actions (not in selectors) so
- * that components get stable array references and only re-render when the
- * set actually changes.
+ * `active`, `trackedRecords` and `visible` are recomputed inside actions (not
+ * in selectors) so that components get stable array references and only
+ * re-render when the set actually changes.
  *
  * Positions are NOT stored here. Propagated state lives outside React state
  * (see README, "Module contracts").
@@ -57,15 +60,22 @@ export const DEFAULT_CATEGORY_FILTER: CategoryFilter = Object.fromEntries(
 interface PersistedSatelliteState {
   enabledGroups: CatalogGroupId[];
   extraNoradIds: number[];
-  untrackedIds: number[];
+  /** Objects the user removed from the loaded groups. */
+  removedIds: number[];
   categoryFilter: CategoryFilter;
+  /** Tracked list, in the order the user added objects. */
+  trackedIds: number[];
+  /** Show only Tracked-list objects on the globe, and their combined pass schedule. */
+  trackedOnly: boolean;
   selectedId: number | null;
 }
 
 export interface SatelliteState extends PersistedSatelliteState {
   satellites: SatelliteRecord[];
   byId: ReadonlyMap<number, SatelliteRecord>;
-  tracked: SatelliteRecord[];
+  active: SatelliteRecord[];
+  /** Loaded records of `trackedIds`, in list order. Ids not in the catalog are skipped. */
+  trackedRecords: SatelliteRecord[];
   visible: SatelliteRecord[];
   groupStatus: CatalogGroupStatus[];
   extraStatus: ExtraObjectStatus[];
@@ -80,25 +90,57 @@ export interface SatelliteState extends PersistedSatelliteState {
   /** Load the catalog. Uses cache unless stale; `force` = manual refresh. */
   loadCatalog(opts?: { force?: boolean }): Promise<void>;
   setGroupEnabled(id: CatalogGroupId, enabled: boolean): void;
-  /** Track an object by NORAD id. Downloads it individually if no enabled group contains it. */
-  trackNoradId(noradId: number): void;
-  untrack(noradId: number): void;
-  /** Re-track every object the user removed from its groups. */
-  restoreUntracked(): void;
+  /**
+   * Add an object to the catalog by NORAD id (restoring it if it was removed).
+   * Downloads it individually if no enabled group contains it.
+   */
+  addNoradId(noradId: number): void;
+  /** Remove an object from the catalog (and from the Tracked list). */
+  removeObject(noradId: number): void;
+  /** Bring back every object the user removed from its groups. */
+  restoreRemoved(): void;
+  /** Add an object to the Tracked list. Also adds it to the catalog (see `addNoradId`). */
+  addTracked(noradId: number): void;
+  removeTracked(noradId: number): void;
+  setTrackedOnly(on: boolean): void;
   setCategoryVisible(category: SatelliteCategory, visible: boolean): void;
   select(noradId: number | null): void;
   selectPass(passId: string | null): void;
+  /** Select a satellite and one of its passes together (rows of the combined schedule). */
+  selectSatellitePass(noradId: number, passId: string): void;
 }
 
-function derive(
-  satellites: SatelliteRecord[],
-  untrackedIds: number[],
-  categoryFilter: CategoryFilter,
-): Pick<SatelliteState, 'tracked' | 'visible'> {
-  const untracked = new Set(untrackedIds);
-  const tracked = satellites.filter((s) => !untracked.has(s.noradId));
-  const visible = tracked.filter((s) => categoryFilter[s.category]);
-  return { tracked, visible };
+type DeriveInputs = Pick<SatelliteState, 'satellites' | 'byId' | 'removedIds' | 'categoryFilter' | 'trackedIds' | 'trackedOnly'>;
+
+/** Recomputes the derived sets. Pass the current state merged with the change. */
+export function derive(s: DeriveInputs): Pick<SatelliteState, 'active' | 'trackedRecords' | 'visible'> {
+  const removed = new Set(s.removedIds);
+  const active = s.satellites.filter((r) => !removed.has(r.noradId));
+  const trackedRecords = s.trackedIds.flatMap((id) => {
+    const r = s.byId.get(id);
+    return r && !removed.has(id) ? [r] : [];
+  });
+  const trackedSet = new Set(s.trackedIds);
+  const visible = active.filter((r) => s.categoryFilter[r.category] && (!s.trackedOnly || trackedSet.has(r.noradId)));
+  return { active, trackedRecords, visible };
+}
+
+/** Persisted state written by version 1 (before the Tracked list). */
+interface PersistedV1 {
+  untrackedIds?: number[];
+}
+
+/** Upgrades persisted state from older versions. Exported for tests. */
+export function migrateSatellitePersist(persisted: unknown, version: number): Partial<PersistedSatelliteState> {
+  const p = { ...((persisted ?? {}) as Partial<PersistedSatelliteState> & PersistedV1) };
+  if (version < 2) {
+    // v1 called removed objects "untracked"; "tracked" now means the user's Tracked list.
+    p.removedIds = p.untrackedIds ?? [];
+    delete p.untrackedIds;
+    p.trackedIds = [];
+    p.trackedOnly = false;
+  }
+  return p;
 }
 
 let loadSeq = 0;
@@ -108,14 +150,17 @@ export const useSatelliteStore = create<SatelliteState>()(
     (set, get) => ({
       enabledGroups: [...DEFAULT_GROUP_IDS],
       extraNoradIds: [],
-      untrackedIds: [],
+      removedIds: [],
       categoryFilter: { ...DEFAULT_CATEGORY_FILTER },
+      trackedIds: [],
+      trackedOnly: false,
       selectedId: null,
       selectedPassId: null,
 
       satellites: [],
       byId: new Map(),
-      tracked: [],
+      active: [],
+      trackedRecords: [],
       visible: [],
       groupStatus: [],
       extraStatus: [],
@@ -143,13 +188,13 @@ export const useSatelliteStore = create<SatelliteState>()(
         }
         // A newer load (e.g. group toggled mid-flight) supersedes this one.
         if (seq !== loadSeq) return;
-        const { untrackedIds, categoryFilter, selectedId } = get();
+        const { selectedId } = get();
         const byId = new Map(result.satellites.map((s) => [s.noradId, s]));
         const empty = result.satellites.length === 0;
         set({
           satellites: result.satellites,
           byId,
-          ...derive(result.satellites, untrackedIds, categoryFilter),
+          ...derive({ ...get(), satellites: result.satellites, byId }),
           groupStatus: result.groupStatus,
           extraStatus: result.extraStatus,
           lastLoadedAtMs: result.loadedAtMs,
@@ -168,40 +213,64 @@ export const useSatelliteStore = create<SatelliteState>()(
         void get().loadCatalog();
       },
 
-      trackNoradId: (noradId) => {
+      addNoradId: (noradId) => {
         if (!Number.isInteger(noradId) || noradId <= 0) return;
         const s = get();
-        const untrackedIds = s.untrackedIds.filter((id) => id !== noradId);
+        const removedIds = s.removedIds.filter((id) => id !== noradId);
         const needsDownload = !s.byId.has(noradId) && !s.extraNoradIds.includes(noradId);
         set({
-          untrackedIds,
+          removedIds,
           extraNoradIds: needsDownload ? [...s.extraNoradIds, noradId] : s.extraNoradIds,
-          ...derive(s.satellites, untrackedIds, s.categoryFilter),
+          ...derive({ ...s, removedIds }),
         });
         if (needsDownload) void get().loadCatalog();
       },
 
-      untrack: (noradId) => {
+      removeObject: (noradId) => {
         const s = get();
-        const untrackedIds = s.untrackedIds.includes(noradId) ? s.untrackedIds : [...s.untrackedIds, noradId];
+        const removedIds = s.removedIds.includes(noradId) ? s.removedIds : [...s.removedIds, noradId];
+        const trackedIds = s.trackedIds.filter((id) => id !== noradId);
         set({
-          untrackedIds,
+          removedIds,
+          trackedIds,
           // Individually added objects are dropped entirely.
           extraNoradIds: s.extraNoradIds.filter((id) => id !== noradId),
-          ...derive(s.satellites, untrackedIds, s.categoryFilter),
+          ...derive({ ...s, removedIds, trackedIds }),
           ...(s.selectedId === noradId ? { selectedId: null, selectedPassId: null } : {}),
         });
       },
 
-      restoreUntracked: () => {
+      restoreRemoved: () => {
         const s = get();
-        set({ untrackedIds: [], ...derive(s.satellites, [], s.categoryFilter) });
+        set({ removedIds: [], ...derive({ ...s, removedIds: [] }) });
+      },
+
+      addTracked: (noradId) => {
+        if (!Number.isInteger(noradId) || noradId <= 0) return;
+        get().addNoradId(noradId);
+        const s = get();
+        if (s.trackedIds.includes(noradId)) return;
+        const trackedIds = [...s.trackedIds, noradId];
+        set({ trackedIds, ...derive({ ...s, trackedIds }) });
+      },
+
+      removeTracked: (noradId) => {
+        const s = get();
+        if (!s.trackedIds.includes(noradId)) return;
+        const trackedIds = s.trackedIds.filter((id) => id !== noradId);
+        set({ trackedIds, ...derive({ ...s, trackedIds }) });
+      },
+
+      setTrackedOnly: (trackedOnly) => {
+        const s = get();
+        if (s.trackedOnly === trackedOnly) return;
+        set({ trackedOnly, ...derive({ ...s, trackedOnly }) });
       },
 
       setCategoryVisible: (category, visible) => {
         const s = get();
         const categoryFilter = { ...s.categoryFilter, [category]: visible };
-        set({ categoryFilter, ...derive(s.satellites, s.untrackedIds, categoryFilter) });
+        set({ categoryFilter, ...derive({ ...s, categoryFilter }) });
       },
 
       select: (noradId) => {
@@ -210,16 +279,21 @@ export const useSatelliteStore = create<SatelliteState>()(
       },
 
       selectPass: (passId) => set({ selectedPassId: passId }),
+
+      selectSatellitePass: (noradId, passId) => set({ selectedId: noradId, selectedPassId: passId }),
     }),
     {
       name: PERSIST_KEYS.satellites,
-      version: 1,
+      version: 2,
       storage: createJSONStorage(safeLocalStorage),
+      migrate: (persisted, version) => migrateSatellitePersist(persisted, version) as SatelliteState,
       partialize: (s): PersistedSatelliteState => ({
         enabledGroups: s.enabledGroups,
         extraNoradIds: s.extraNoradIds,
-        untrackedIds: s.untrackedIds,
+        removedIds: s.removedIds,
         categoryFilter: s.categoryFilter,
+        trackedIds: s.trackedIds,
+        trackedOnly: s.trackedOnly,
         selectedId: s.selectedId,
       }),
       merge: (persisted, current) => {
@@ -228,6 +302,9 @@ export const useSatelliteStore = create<SatelliteState>()(
           ...current,
           ...p,
           categoryFilter: { ...DEFAULT_CATEGORY_FILTER, ...p.categoryFilter },
+          removedIds: Array.isArray(p.removedIds) ? p.removedIds : current.removedIds,
+          trackedIds: Array.isArray(p.trackedIds) ? p.trackedIds.filter((id) => Number.isInteger(id) && id > 0) : current.trackedIds,
+          trackedOnly: typeof p.trackedOnly === 'boolean' ? p.trackedOnly : current.trackedOnly,
         };
       },
     },
