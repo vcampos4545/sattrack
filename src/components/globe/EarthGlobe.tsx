@@ -11,6 +11,7 @@ import { CATEGORY_COLORS } from '../../utils/category-colors';
 import { formatNumber } from '../../utils/format';
 import { Panel } from '../layout/Panel';
 import { WebGLGuard } from '../layout/WebGLGuard';
+import { OrbitalElementsPanel } from '../satellite/OrbitalElementsPanel';
 import { SatelliteFilters } from '../satellite/SatelliteFilters';
 import { GlobeScene } from './GlobeScene';
 import { GlobeToolbar } from './GlobeToolbar';
@@ -93,11 +94,11 @@ function ViewButtons() {
 
 /** Compact card for the selected object (full details are in the strip below). */
 function SelectedOverlay() {
-  const { record, state, error } = useSelectedSatellite(2);
+  const { record, state, error, timeMs } = useSelectedSatellite(2);
   const select = useSatelliteStore((s) => s.select);
   if (!record) return null;
   return (
-    <div className="absolute top-2 left-2 w-60 border border-line-strong bg-panel/85 px-3 py-2 backdrop-blur">
+    <div className="absolute top-2 left-2 max-h-[calc(100%-4rem)] w-64 overflow-y-auto border border-line-strong bg-panel/85 px-3 py-2 backdrop-blur">
       <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.12em] text-faint">
         <span className="inline-block size-2" style={{ background: CATEGORY_COLORS[record.category] }} />
         {CATEGORY_LABELS[record.category]} · {record.noradId}
@@ -116,6 +117,7 @@ function SelectedOverlay() {
       ) : (
         <p className="mt-1 text-[11px] text-danger">{error ?? 'No position'}</p>
       )}
+      <OrbitalElementsPanel record={record} timeMs={timeMs} />
     </div>
   );
 }
